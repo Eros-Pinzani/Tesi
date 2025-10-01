@@ -1,0 +1,35 @@
+# Python bytecode e cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ambienti virtuali (ignora completamente)
+.venv/
+venv/
+env/
+
+# IDE/Editor
+.idea/
+.vscode/
+
+# Cache e tool Python
+.mypy_cache/
+.pytest_cache/
+.tox/
+.pytype/
+*.egg-info/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build/Distribuzione
+build/
+dist/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# File di sistema
+.DS_Store
+Thumbs.db
+
