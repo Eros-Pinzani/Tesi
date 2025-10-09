@@ -21,12 +21,16 @@ class Robot:
         self.omega = float(omega)
 
     def step(self, dt):
-        """Aggiorna lo stato del robot usando l'integrazione di Euler"""
+        """Aggiorna lo stato del robot con schema di Eulero esplicito fornito:
+        x_{k+1} = x_k + v_k * cos(theta_k) * dt
+        y_{k+1} = y_k + v_k * sin(theta_k) * dt
+        theta_{k+1} = theta_k + omega_k * dt
+        Poi normalizza l'angolo."""
         self.x += self.v * np.cos(self.theta) * dt
         self.y += self.v * np.sin(self.theta) * dt
         self.theta += self.omega * dt
         self._normalize_angle()
-        
+
     def _normalize_angle(self):
         """Normalizza l'angolo theta nell'intervallo [-pi, pi]"""
         self.theta = (self.theta + np.pi) % (2 * np.pi) - np.pi

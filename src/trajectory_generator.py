@@ -46,15 +46,15 @@ class TrajectoryGenerator:
         return vs, omegas
 
     def eight(self, v, radius, T, dt):
-        """Genera una traiettoria a otto con velocità v e raggio radius per un tempo T con passo dt
-        - v: velocità lineare costante
-        - omega(t): varia sinusoidalmente per ottenere due lobi opposti (curvatura alternata)
-        """
-        omega = v/float(radius)  # Valore di picco della velocità angolare (imposta la curvatura massima)
-        n = int(np.ceil(T/dt))  # Numero di campioni
-        t = np.linspace(0, T, n)  # Vettore dei tempi equispaziati nell'intervallo [0, T]
-        omega_traj = omega * np.sin(2 * np.pi * t / T)  # Profilo sinusoidale periodico di omega (rad/s)
-        return np.full(n, v), omega_traj  # v costante; omega cambia segno ⇒ disegna un "otto"
+        """Traiettoria "otto" molto semplice: prima metà curvatura positiva, seconda metà curvatura negativa.
+        Non è una lemniscata esatta ma un concatenamento di due archi con stessa |omega|."""
+        n = int(np.ceil(T / dt))              # Numero di step discreti totali in cui dividiamo la durata T
+        mid = n // 2                          # Indice di separazione tra prima e seconda metà della traiettoria
+        vs = np.full(n, v)                    # Velocità lineare costante v in tutti gli step
+        omegas = np.zeros(n)                  # Pre-allocazione array velocità angolare
+        omegas[:mid] = v / float(radius)      # Prima metà: curvatura costante (giro "a sinistra" se theta cresce)
+        omegas[mid:] = -v / float(radius)     # Seconda metà: curvatura opposta (giro "a destra"), crea il cambio di lobo
+        return vs, omegas                     # Ritorna i profili (v_k, omega_k) per ogni passo
 
     def random_walk(self, v_mean, omega_std, T, dt, seed=None):
         """Genera una traiettoria randomica con velocità media v_mean e deviazione standard omega_std per un tempo T con passo dt
