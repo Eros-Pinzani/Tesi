@@ -6,60 +6,94 @@ import visualizer
 
 def main():
     dt = 0.05       # Passo temporale di integrazione (Eulero)
-    T = 100.0       # Durata di ciascuna simulazione (s)
-    v = 0.5         # Velocità lineare di riferimento
-    radius = 2.0    # Parametro di scala/raggio
-    v_min = 0.2     # Velocità minima per i profili variabili
-    v_max = 0.8     # Velocità massima per i profili variabili
-    omega_std = 0.5 # Deviazione standard per il random walk (rad/s)
+
+    # Parametri base di riferimento
+    v_ref = 0.5
+    radius_ref = 2.0
+    v_min_ref = 0.2
+    v_max_ref = 0.8
+    omega_std_ref = 0.5
 
     tg = TrajectoryGenerator()                 # Generatore delle traiettorie
     sim = Simulator(robot=Robot())             # Simulatore con robot iniziale
 
-    histories = []  # Lista delle storie [x,y,theta] per ogni traiettoria
-    titles = []     # Titoli da mostrare nel carosello
+    histories = []      # Lista delle storie [x,y,theta] per ogni traiettoria
+    titles = []         # Titoli da mostrare nel carosello
+    commands_list = []  # Lista parallela dei comandi (v, omega) per ogni traiettoria
 
-    # 1) Rettilinea (v costante)
-    vs, omegas = tg.straight(v=v, T=T, dt=dt)
+    # 1) Rettilinea (v costante) — più corta per visibilità
+    T_straight = 20.0
+    v = v_ref
+    vs, omegas = tg.straight(v=v, T=T_straight, dt=dt)
     sim.reset_robot(x=0.0, y=0.0, theta=0.0)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
-    titles.append(f"Rettilinea (v costante) — v={v:.2f} m/s, T={T:.1f} s, dt={dt:.3f} s")
+    commands_list.append(sim.commands)
+    titles.append("Rettilinea (v costante)")
 
-    # 2) Rettilinea (v variabile)
-    vs, omegas = tg.straight_var_speed(v_min=v_min, v_max=v_max, T=T, dt=dt, phase=0.0)
+    # 2) Rettilinea (v variabile) — stessa durata della retta costante
+    T_straight_var = 20.0
+    v_min, v_max = v_min_ref, v_max_ref
+    vs, omegas = tg.straight_var_speed(v_min=v_min, v_max=v_max, T=T_straight_var, dt=dt, phase=0.0)
     sim.reset_robot(x=0.0, y=0.0, theta=0.0)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
-    titles.append(f"Rettilinea (v variabile) — v∈[{v_min:.2f},{v_max:.2f}] m/s, T={T:.1f} s, dt={dt:.3f} s")
+    commands_list.append(sim.commands)
+    titles.append("Rettilinea (v variabile)")
 
-    # 3) Circolare (raggio costante)
-    vs, omegas = tg.circle(v=v, radius=radius, T=T, dt=dt)
+    # 3) Circolare (raggio costante) — ~1.5 giri
+    T_circle = 40.0
+    v = v_ref
+    R = radius_ref
+    vs, omegas = tg.circle(v=v, radius=R, T=T_circle, dt=dt)
     sim.reset_robot(x=0.0, y=0.0, theta=0.0)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
-    titles.append(f"Circolare (raggio costante) — v={v:.2f} m/s, R={radius:.2f} m, T={T:.1f} s, dt={dt:.3f} s")
+    commands_list.append(sim.commands)
+    titles.append("Circolare (v costante)")
 
     # 4) Circolare (v variabile, raggio costante)
-    vs, omegas = tg.circle_var_speed(v_min=v_min, v_max=v_max, radius=radius, T=T, dt=dt, phase=0.0)
+    T_circle_var = 40.0
+    v_min, v_max = v_min_ref, v_max_ref
+    vs, omegas = tg.circle_var_speed(v_min=v_min, v_max=v_max, radius=R, T=T_circle_var, dt=dt, phase=0.0)
     sim.reset_robot(x=0.0, y=0.0, theta=0.0)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
-    titles.append(f"Circolare (v variabile) — v∈[{v_min:.2f},{v_max:.2f}] m/s, R={radius:.2f} m, T={T:.1f} s, dt={dt:.3f} s")
+    commands_list.append(sim.commands)
+    titles.append("Circolare (v variabile)")
 
-    # 5) Otto semplice (due archi di segno opposto)
-    vs, omegas = tg.eight(v=v, radius=radius, T=T, dt=dt)
+    # 5) Otto semplice (due archi di segno opposto) — un po' più lungo per chiudere la forma
+    T_eight = 60.0
+    v = v_ref
+    vs, omegas = tg.eight(v=v, radius=R, T=T_eight, dt=dt)
     sim.reset_robot(x=0.0, y=0.0, theta=0.0)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
-    titles.append(f"Traiettoria a 8 — v={v:.2f} m/s, R={radius:.2f} m, T={T:.1f} s, dt={dt:.3f} s")
+    commands_list.append(sim.commands)
+    titles.append("Traiettoria a 8")
 
-    # 6) Random walk
-    vs, omegas = tg.random_walk(v_mean=v, omega_std=omega_std, T=T, dt=dt, seed=42)
+    # 6) Random walk — durata media
+    T_rw = 40.0
+    v_mean = v_ref
+    omega_std = omega_std_ref
+    vs, omegas = tg.random_walk(v_mean=v_mean, omega_std=omega_std, T=T_rw, dt=dt, seed=42)
     sim.reset_robot(x=0.0, y=0.0, theta=0.0)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
-    titles.append(f"Random walk — v_mean={v:.2f} m/s, omega_std={omega_std:.2f} rad/s, T={T:.1f} s, dt={dt:.3f} s")
+    commands_list.append(sim.commands)
+    titles.append("Random walk")
+
+    # Passi per disegnare la posa del robot per ciascuna traiettoria (in ordine):
+    # [Retta costante, Retta variabile, Cerchio costante, Cerchio variabile, Otto, Random walk]
+    show_steps = [20, 20, 40, 40, 50, 60]
 
     # Salva TUTTE le immagini in batch nella cartella img (senza aprire finestre)
-    visualizer.save_trajectories_images(histories, titles, show_orient_every=40)
+    visualizer.save_trajectories_images(histories, titles, show_orient_every=show_steps)
 
-    # Mostra tutte in un'unica finestra con pulsanti Precedente/Successivo
-    visualizer.show_trajectories_carousel(histories, titles, show_orient_every=40, save_each=False)
+    # Mostra tutte in un'unica finestra con pulsanti Precedente/Successivo e pannello info
+    visualizer.show_trajectories_carousel(
+        histories,
+        titles,
+        show_orient_every=show_steps,
+        save_each=False,
+        commands_list=commands_list,
+        dts=dt,
+        show_info=True,
+    )
 
 
 if __name__ == "__main__":
