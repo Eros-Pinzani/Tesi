@@ -1,36 +1,84 @@
 # Classe che ha il compito di plottare le traiettorie, disegnare il robot in alcuni istanti e salvare figure
 
 import matplotlib.pyplot as plt
-from matplotlib.patches import Circle
+from matplotlib.patches import Circle, Rectangle
 import numpy as np
 from pathlib import Path  # Per costruire percorsi portabili
 import re
 from datetime import datetime
 from matplotlib.widgets import Button  # Pulsanti UI per navigare tra i grafici
+from matplotlib import transforms as mtransforms
 
 
-def draw_robot(ax, state, robot_radius=0.1, color='tab:blue', dir_len=None, arrow_color='orange', center_color='orange'):
-    """Disegna il robot come un cerchio (blu), una freccia (arancione) e un pallino centrale (arancione).
+def _rect_dims_from_radius(robot_radius: float):
+    """Deriva dimensioni del rettangolo dal parametro di scala robot_radius.
+    - width (lato corto, fronte): ~2× robot_radius
+    - length (lato lungo, direzione di marcia): ~4× robot_radius
+    Ritorna (width, length)."""
+    width = 2.0 * robot_radius
+    length = 4.0 * robot_radius
+    return width, length
+
+
+def _wheel_params(robot_radius: float):
+    """Parametri delle rotelle a partire dalla scala del robot.
+    Ritorna (wheel_radius, offset_out) dove offset_out è l'offset del centro ruota
+    verso l'esterno rispetto al vertice del corpo (in coordinate locali)."""
+    wheel_radius = 0.22 * robot_radius
+    offset_out = 0.15 * robot_radius
+    return wheel_radius, offset_out
+
+
+def draw_robot(ax, state, robot_radius=0.1, color='tab:blue', dir_len=None, arrow_color='orange', center_color='orange',
+               draw_wheels: bool = True, wheel_facecolor='white', wheel_edgecolor='k'):
+    """Disegna il robot come un rettangolo orientato (lato corto = fronte),
+    con pallino centrale e freccia arancioni e quattro rotelle posizionate
+    in corrispondenza della fine dei lati lunghi (cioè davanti e dietro, allineate
+    con le due fiancate), non sui vertici.
     - ax: oggetto Axes su cui disegnare
     - state: array/tupla [x, y, theta]
-    - robot_radius: raggio del cerchio robot
+    - robot_radius: parametro di scala
     - color: colore del corpo del robot (default blu)
     - dir_len: lunghezza freccia; default 3×raggio
-    - arrow_color: colore della freccia (default arancione)
-    - center_color: colore del pallino al centro (default arancione)
+    - arrow_color / center_color: colori per freccia e centro
+    - draw_wheels: se True disegna quattro rotelle come cerchi ai vertici
     """
     x, y, th = state
 
-    # Corpo del robot (blu, contorno nero) sopra la traiettoria
-    circ = Circle((x, y), robot_radius, fill=True, alpha=0.3, color=color, ec='k', zorder=3)
-    ax.add_patch(circ)
+    # Dimensioni rettangolo: lato lungo allineato con theta (direzione di marcia), fronte = lato corto
+    width, length = _rect_dims_from_radius(robot_radius)
 
-    # Pallino centrale (arancione) in primo piano
+    # Rettangolo in frame locale con asse lungo lungo x-locale
+    rect = Rectangle((-length/2.0, -width/2.0), length, width, linewidth=1.0, facecolor=color, alpha=0.3, edgecolor='k', zorder=3)
+    trans = mtransforms.Affine2D().rotate(th).translate(x, y) + ax.transData
+    rect.set_transform(trans)
+    ax.add_patch(rect)
+
+    # Rotelle: quattro cerchi allineati con la fine dei lati lunghi (sporgenza solo lungo x)
+    if draw_wheels:
+        w_r, w_off = _wheel_params(robot_radius)
+        # Fattore di posizionamento lungo l'asse lungo: 1.0 sarebbe sugli spigoli;
+        # usiamo <1 per portarli vicino alla fine dei lati lunghi ma non agli spigoli.
+        wheel_long_frac = 0.8  # 80% della semi-lunghezza
+        x_off = wheel_long_frac * (length / 2.0)
+        corners = [
+            ( +x_off, +width/2.0 + w_off),  # lato lungo superiore, vicino all'estremità destra
+            ( -x_off, +width/2.0 + w_off),  # lato lungo superiore, vicino all'estremità sinistra
+            ( +x_off, -width/2.0 - w_off),  # lato lungo inferiore, vicino all'estremità destra
+            ( -x_off, -width/2.0 - w_off),  # lato lungo inferiore, vicino all'estremità sinistra
+        ]
+        for cx, cy in corners:
+            wheel = Circle((cx, cy), w_r, facecolor=wheel_facecolor, edgecolor=wheel_edgecolor, linewidth=1.0, zorder=4)
+            wheel.set_transform(trans)
+            ax.add_patch(wheel)
+
+    # Pallino centrale (arancione)
     center_r = 0.25 * robot_radius
-    center = Circle((x, y), center_r, fill=True, color=center_color, ec='none', zorder=4)
+    center = Circle((0.0, 0.0), center_r, fill=True, color=center_color, ec='none', zorder=4)
+    center.set_transform(trans)
     ax.add_patch(center)
 
-    # Freccia di orientamento (arancione) in primo piano
+    # Freccia di orientamento (arancione), punta sul lato corto frontale (verso +x del frame locale dopo rotazione)
     if dir_len is None:
         dir_len = 3.0 * robot_radius
     dx = dir_len * np.cos(th)
@@ -82,14 +130,30 @@ def _robot_scale_from_history(history):
 
 
 def _compute_axes_limits_with_glyphs(history, step, r_robot, d_arrow):
-    """Calcola limiti x/y includendo corpo del robot (cerchi) e punte delle frecce.
-    Usa l'angolo theta salvato nello stato."""
+    """Calcola limiti x/y includendo corpo del robot (rettangolo), rotelle e punte delle frecce.
+    Usa l'angolo theta salvato nello stato, include l'estensione massima indipendente dall'orientamento
+    pari al raggio della circonferenza circoscritta al corpo + offset rotelle."""
     xs = history[:, 0]
     ys = history[:, 1]
-    x_min = float(np.min(xs)) - r_robot
-    x_max = float(np.max(xs)) + r_robot
-    y_min = float(np.min(ys)) - r_robot
-    y_max = float(np.max(ys)) + r_robot
+    # Estensione base della traiettoria
+    x_min = float(np.min(xs))
+    x_max = float(np.max(xs))
+    y_min = float(np.min(ys))
+    y_max = float(np.max(ys))
+
+    # Margine legato al corpo (diagonale del rettangolo) + rotelle poste esternamente
+    width, length = _rect_dims_from_radius(r_robot)
+    w_r, w_off = _wheel_params(r_robot)
+    body_half_diag = 0.5 * float(np.hypot(length, width))
+    wheels_extra = float(w_off + w_r)
+    extent_radius = body_half_diag + wheels_extra
+
+    x_min -= extent_radius
+    x_max += extent_radius
+    y_min -= extent_radius
+    y_max += extent_radius
+
+    # Estensione per punte delle frecce (valutata a intervalli)
     n = len(history)
     step = max(1, int(step))
     for i in range(0, n, step):
@@ -100,7 +164,8 @@ def _compute_axes_limits_with_glyphs(history, step, r_robot, d_arrow):
         x_max = max(x_max, tip_x)
         y_min = min(y_min, tip_y)
         y_max = max(y_max, tip_y)
-    # Aggiunge un piccolo margine proporzionale all'estensione
+
+    # Piccolo margine finale
     pad = 0.02 * max(x_max - x_min, y_max - y_min, 1.0)
     return x_min - pad, x_max + pad, y_min - pad, y_max + pad
 
@@ -178,7 +243,7 @@ def show_trajectories_carousel(
     assert len(histories) == len(titles) and len(histories) > 0, "Liste vuote o di diversa lunghezza"
     # Se è una sequenza, deve avere la stessa lunghezza di histories
     if isinstance(show_orient_every, (list, tuple, np.ndarray)):
-        assert len(show_orient_every) == len(histories), "show_orient_every deve avere stessa lunghezza delle traiettorie"
+        assert len(show_orient_every) == len(histories), "show_orient_every deve avere stessa lunghezza di delle traiettorie"
     if commands_list is not None:
         assert len(commands_list) == len(histories), "commands_list deve avere stessa lunghezza di histories"
     # Normalizza dts a lista
