@@ -2,6 +2,7 @@ from robot import Robot
 from trajectory_generator import TrajectoryGenerator
 from simulator import Simulator
 import visualizer
+import math  # Per calcolo di 2πR/v
 
 
 def main():
@@ -39,33 +40,42 @@ def main():
     commands_list.append(sim.commands)
     titles.append("Rettilinea (v variabile)")
 
-    # 3) Circolare (raggio costante) — ~1.5 giri
-    T_circle = 40.0
+    # 3) Circolare (raggio costante, v costante) — esattamente 1 giro, allineato a dt
     v = v_ref
     R = radius_ref
+    period = (2.0 * math.pi * R) / max(v, 1e-9)
+    n_steps = max(1, int(round(period / dt)))
+    T_circle = n_steps * dt
     vs, omegas = tg.circle(v=v, radius=R, T=T_circle, dt=dt)
     sim.reset_robot(x=0.0, y=0.0, theta=0.0)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
     commands_list.append(sim.commands)
-    titles.append("Circolare (v costante)")
+    titles.append("Circolare (v costante, 1 giro)")
 
-    # 4) Circolare (v variabile, raggio costante)
-    T_circle_var = 40.0
+    # 4) Circolare (raggio costante, v variabile) — esattamente 1 giro, allineato a dt
     v_min, v_max = v_min_ref, v_max_ref
+    v_mid = 0.5 * (v_min + v_max)               # Valore medio del profilo sinusoidale
+    period_var = (2.0 * math.pi * R) / max(v_mid, 1e-9)
+    n_steps_var = max(1, int(round(period_var / dt)))
+    T_circle_var = n_steps_var * dt
     vs, omegas = tg.circle_var_speed(v_min=v_min, v_max=v_max, radius=R, T=T_circle_var, dt=dt, phase=0.0)
     sim.reset_robot(x=0.0, y=0.0, theta=0.0)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
     commands_list.append(sim.commands)
-    titles.append("Circolare (v variabile)")
+    titles.append("Circolare (v variabile, 1 giro)")
 
-    # 5) Otto semplice (due archi di segno opposto) — un po' più lungo per chiudere la forma
-    T_eight = 60.0
+    # 5) Otto semplice (due semiarchi opposti) — un “giro completo” = due lobi chiusi ⇒ 4πR/v
     v = v_ref
+    period_eight = (4.0 * math.pi * R) / max(v, 1e-9)  # Due lobi completi: primo mezzo tempo = 2πR/v
+    n_steps_eight = max(2, int(round(period_eight / dt)))
+    if n_steps_eight % 2 == 1:
+        n_steps_eight += 1  # due metà con lo stesso numero di step discreti
+    T_eight = (n_steps_eight - 1e-9) * dt  # epsilon per stabilità su ceil
     vs, omegas = tg.eight(v=v, radius=R, T=T_eight, dt=dt)
     sim.reset_robot(x=0.0, y=0.0, theta=0.0)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
     commands_list.append(sim.commands)
-    titles.append("Traiettoria a 8")
+    titles.append("Traiettoria a 8 (1 giro)")
 
     # 6) Random walk — durata media
     T_rw = 40.0
@@ -79,7 +89,7 @@ def main():
 
     # Passi per disegnare la posa del robot per ciascuna traiettoria (in ordine):
     # [Retta costante, Retta variabile, Cerchio costante, Cerchio variabile, Otto, Random walk]
-    show_steps = [20, 20, 40, 40, 50, 60]
+    show_steps = [80, 80, 40, 40, 120, 120]  # più rado sull'otto e sul random walk
 
     # Salva TUTTE le immagini in batch nella cartella img (senza aprire finestre)
     visualizer.save_trajectories_images(histories, titles, show_orient_every=show_steps)

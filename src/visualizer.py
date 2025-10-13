@@ -9,27 +9,32 @@ from datetime import datetime
 from matplotlib.widgets import Button  # Pulsanti UI per navigare tra i grafici
 
 
-def draw_robot(ax, state, robot_radius=0.1, color='tab:blue', dir_len=None):
-    """Disegna il robot come un cerchio con una freccia che indica l'orientamento.
+def draw_robot(ax, state, robot_radius=0.1, color='tab:blue', dir_len=None, arrow_color='orange', center_color='orange'):
+    """Disegna il robot come un cerchio (blu), una freccia (arancione) e un pallino centrale (arancione).
     - ax: oggetto Axes su cui disegnare
-    - state: array/tupla [x, y, theta] (posizione e orientamento del robot)
-    - robot_radius: raggio del cerchio che rappresenta il robot (in metri nelle stesse unità dell'asse)
-    - color: colore del robot (nome o codice matplotlib)
-    - dir_len: lunghezza della freccia direzionale in unità dati (se None, 3×robot_radius)
+    - state: array/tupla [x, y, theta]
+    - robot_radius: raggio del cerchio robot
+    - color: colore del corpo del robot (default blu)
+    - dir_len: lunghezza freccia; default 3×raggio
+    - arrow_color: colore della freccia (default arancione)
+    - center_color: colore del pallino al centro (default arancione)
     """
-    x, y, th = state  # Decomposizione dello stato nei tre componenti
+    x, y, th = state
 
-    # Corpo del robot: cerchio pieno, leggermente trasparente, contorno nero
-    circ = Circle((x, y), robot_radius, fill=True, alpha=0.3, color=color, ec='k')
-    ax.add_patch(circ)  # Aggiunge il cerchio all'axes
+    # Corpo del robot (blu, contorno nero) sopra la traiettoria
+    circ = Circle((x, y), robot_radius, fill=True, alpha=0.3, color=color, ec='k', zorder=3)
+    ax.add_patch(circ)
 
-    # Vettore direzione: piccolo offset in direzione theta per mostrare l'orientamento
+    # Pallino centrale (arancione) in primo piano
+    center_r = 0.25 * robot_radius
+    center = Circle((x, y), center_r, fill=True, color=center_color, ec='none', zorder=4)
+    ax.add_patch(center)
+
+    # Freccia di orientamento (arancione) in primo piano
     if dir_len is None:
-        dir_len = 3.0 * robot_radius  # Default: freccia ~3× raggio robot
-    dx = dir_len * np.cos(th)  # componente x della direzione
-    dy = dir_len * np.sin(th)  # componente y della direzione
-
-    # Freccia che indica l'orientamento; head_width/head_length in proporzione a dir_len
+        dir_len = 3.0 * robot_radius
+    dx = dir_len * np.cos(th)
+    dy = dir_len * np.sin(th)
     ax.arrow(
         x,
         y,
@@ -37,9 +42,10 @@ def draw_robot(ax, state, robot_radius=0.1, color='tab:blue', dir_len=None):
         dy,
         head_width=0.3 * robot_radius,
         head_length=0.4 * robot_radius,
-        fc=color,
-        ec=color,
+        fc=arrow_color,
+        ec=arrow_color,
         length_includes_head=True,
+        zorder=4,
     )
 
 
@@ -75,6 +81,30 @@ def _robot_scale_from_history(history):
     return robot_radius, dir_len
 
 
+def _compute_axes_limits_with_glyphs(history, step, r_robot, d_arrow):
+    """Calcola limiti x/y includendo corpo del robot (cerchi) e punte delle frecce.
+    Usa l'angolo theta salvato nello stato."""
+    xs = history[:, 0]
+    ys = history[:, 1]
+    x_min = float(np.min(xs)) - r_robot
+    x_max = float(np.max(xs)) + r_robot
+    y_min = float(np.min(ys)) - r_robot
+    y_max = float(np.max(ys)) + r_robot
+    n = len(history)
+    step = max(1, int(step))
+    for i in range(0, n, step):
+        x, y, th = map(float, history[i])
+        tip_x = float(x + d_arrow * np.cos(th))
+        tip_y = float(y + d_arrow * np.sin(th))
+        x_min = min(x_min, tip_x)
+        x_max = max(x_max, tip_x)
+        y_min = min(y_min, tip_y)
+        y_max = max(y_max, tip_y)
+    # Aggiunge un piccolo margine proporzionale all'estensione
+    pad = 0.02 * max(x_max - x_min, y_max - y_min, 1.0)
+    return x_min - pad, x_max + pad, y_min - pad, y_max + pad
+
+
 def plot_trajectory(history, show_orient_every=20, title="Traiettoria del robot", save_path=None):
     """Plotta la traiettoria del robot e disegna il robot a intervalli regolari.
     Se save_path è fornito salva la figura su file; altrimenti salva automaticamente in Tesi/img.
@@ -86,23 +116,23 @@ def plot_trajectory(history, show_orient_every=20, title="Traiettoria del robot"
     # Crea una figura quadrata per non distorcere la forma della traiettoria
     fig, ax = plt.subplots(figsize=(7, 7))  # fig è l'oggetto figura, ax gli assi su cui si disegna
 
-    # Traccia la polilinea della traiettoria (x, y). markevery riduce i marker per traiettorie lunghe
     n = len(history)
-    ax.plot(history[:, 0], history[:, 1], '-o', markevery=max(1, n // 20))
+    # Linea della traiettoria (nera) come sfondo
+    ax.plot(history[:, 0], history[:, 1], '-', linewidth=1.5, color='k', zorder=0)
+    step = max(1, int(show_orient_every))
+    # (RIMOSSO) marker neri: lasciamo solo il pallino arancione del robot
 
     # Calcola dimensione robot e freccia in modo adattivo rispetto alla traiettoria
     r_robot, d_arrow = _robot_scale_from_history(history)
 
-    # Disegna il robot (cerchio + freccia) ogni show_orient_every campioni
-    for i in range(0, n, max(1, int(show_orient_every))):
+    # Disegna il robot usando direttamente [x, y, theta] dallo stato
+    for i in range(0, n, step):
         draw_robot(ax, history[i], robot_radius=r_robot, dir_len=d_arrow)
 
-    # Imposta limiti assi con margine per includere il robot anche su traiettorie piatte
-    x_min, x_max = float(np.min(history[:, 0])), float(np.max(history[:, 0]))
-    y_min, y_max = float(np.min(history[:, 1])), float(np.max(history[:, 1]))
-    pad = max(1.2 * r_robot, 0.02 * max(x_max - x_min, y_max - y_min, 1.0))
-    ax.set_xlim(x_min - pad, x_max + pad)
-    ax.set_ylim(y_min - pad, y_max + pad)
+    # Limiti che includono anche le frecce e i cerchi
+    x0, x1, y0, y1 = _compute_axes_limits_with_glyphs(history, step, r_robot, d_arrow)
+    ax.set_xlim(x0, x1)
+    ax.set_ylim(y0, y1)
 
     # Imposta proporzioni uguali sugli assi per non deformare la geometria
     ax.set_aspect('equal', 'box')
@@ -111,8 +141,8 @@ def plot_trajectory(history, show_orient_every=20, title="Traiettoria del robot"
     ax.set_xlabel("x [m]")
     ax.set_ylabel("y [m]")
 
-    # Griglia e titolo per leggibilità
-    ax.grid(True)
+    # Griglia disattivata e titolo
+    ax.grid(False)
     ax.set_title(title)
 
     # Determina il percorso di salvataggio
@@ -201,22 +231,22 @@ def show_trajectories_carousel(
         hist = histories[state["idx"]]
         title = titles[state["idx"]]
         n = len(hist)
-        ax.plot(hist[:, 0], hist[:, 1], '-o', markevery=max(1, n // 20))  # Traiettoria (linea + marker radi)
+        # Linea nera (senza marker) come sfondo
+        ax.plot(hist[:, 0], hist[:, 1], '-', linewidth=1.5, color='k', zorder=0)
+        step = _resolve_show_every(state["idx"])  # passo specifico per traiettoria
+        # (RIMOSSO) marker neri
         # Dimensioni adattive per il robot sulla traiettoria corrente
         r_robot, d_arrow = _robot_scale_from_history(hist)
-        step = _resolve_show_every(state["idx"])  # passo specifico per traiettoria
         for i in range(0, n, step):  # Robot a intervalli regolari
             draw_robot(ax, hist[i], robot_radius=r_robot, dir_len=d_arrow)
-        # Limiti con margine per includere il robot
-        x_min, x_max = float(np.min(hist[:, 0])), float(np.max(hist[:, 0]))
-        y_min, y_max = float(np.min(hist[:, 1])), float(np.max(hist[:, 1]))
-        pad = max(1.2 * r_robot, 0.02 * max(x_max - x_min, y_max - y_min, 1.0))
-        ax.set_xlim(x_min - pad, x_max + pad)
-        ax.set_ylim(y_min - pad, y_max + pad)
+        # Limiti che includono anche frecce e cerchi
+        x0, x1, y0, y1 = _compute_axes_limits_with_glyphs(hist, step, r_robot, d_arrow)
+        ax.set_xlim(x0, x1)
+        ax.set_ylim(y0, y1)
         ax.set_aspect('equal', 'box')
         ax.set_xlabel("x [m]")
         ax.set_ylabel("y [m]")
-        ax.grid(True)
+        ax.grid(False)
         ax.set_title(title)
 
         # Pannello informazioni opzionale (controllato dal parametro)
@@ -319,7 +349,7 @@ def save_trajectories_images(histories, titles, show_orient_every=20):
     Non viene aperta alcuna finestra per questi salvataggi (le figure sono create e chiuse subito)."""
     assert len(histories) == len(titles) and len(histories) > 0, "Liste vuote o di diversa lunghezza"
     if isinstance(show_orient_every, (list, tuple, np.ndarray)):
-        assert len(show_orient_every) == len(histories), "show_orient_every deve avere stessa lunghezza delle traiettorie"
+        assert len(show_orient_every) == len(histories), "show_orient_every deve avere stessa lunghezza di delle traiettorie"
 
     def _resolve_show_every(idx: int) -> int:
         if isinstance(show_orient_every, (list, tuple, np.ndarray)):
@@ -330,19 +360,20 @@ def save_trajectories_images(histories, titles, show_orient_every=20):
         # Crea figura temporanea per il solo salvataggio
         fig, ax = plt.subplots(figsize=(7, 7))
         n = len(hist)
-        ax.plot(hist[:, 0], hist[:, 1], '-o', markevery=max(1, n // 20))  # Traiettoria (linea + alcuni marker)
+        # Linea nera (senza marker) come sfondo
+        ax.plot(hist[:, 0], hist[:, 1], '-', linewidth=1.5, color='k', zorder=0)
+        step = _resolve_show_every(idx)
+        # (RIMOSSO) marker neri
         # Dimensioni adattive per il robot anche nei salvataggi batch
         r_robot, d_arrow = _robot_scale_from_history(hist)
-        step = _resolve_show_every(idx)
         for i in range(0, n, step):  # Pose sparse per orientamento
             draw_robot(ax, hist[i], robot_radius=r_robot, dir_len=d_arrow)
-        # Limiti con margine per includere il robot
-        x_min, x_max = float(np.min(hist[:, 0])), float(np.max(hist[:, 0]))
-        y_min, y_max = float(np.min(hist[:, 1])), float(np.max(hist[:, 1]))
-        pad = max(1.2 * r_robot, 0.02 * max(x_max - x_min, y_max - y_min, 1.0))
-        ax.set_xlim(x_min - pad, x_max + pad)
-        ax.set_ylim(y_min - pad, y_max + pad)
+        # Limiti che includono anche frecce e cerchi
+        x0, x1, y0, y1 = _compute_axes_limits_with_glyphs(hist, step, r_robot, d_arrow)
+        ax.set_xlim(x0, x1)
+        ax.set_ylim(y0, y1)
         ax.set_aspect('equal', 'box')
+        ax.grid(False)
         out_path = _default_save_path(title)  # Percorso nella cartella img
         fig.savefig(out_path, dpi=120, bbox_inches='tight')  # Salvataggio su file
         print(f"Figura salvata in: {out_path}")
