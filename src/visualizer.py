@@ -153,10 +153,13 @@ def _compute_axes_limits_with_glyphs(history, step, r_robot, d_arrow):
     y_min -= extent_radius
     y_max += extent_radius
 
-    # Estensione per punte delle frecce (valutata a intervalli)
+    # Estensione per punte delle frecce (valutata a intervalli) + sempre ultima posa
     n = len(history)
     step = max(1, int(step))
-    for i in range(0, n, step):
+    indices = list(range(0, n, step))
+    if (n - 1) not in indices and n > 0:
+        indices.append(n - 1)
+    for i in indices:
         x, y, th = map(float, history[i])
         tip_x = float(x + d_arrow * np.cos(th))
         tip_y = float(y + d_arrow * np.sin(th))
@@ -192,7 +195,18 @@ def plot_trajectory(history, show_orient_every=20, title="Traiettoria del robot"
 
     # Disegna il robot usando direttamente [x, y, theta] dallo stato
     for i in range(0, n, step):
-        draw_robot(ax, history[i], robot_radius=r_robot, dir_len=d_arrow)
+        # Colori: primo verde, ultimo rosso, altri blu con freccia arancione
+        if i == 0:
+            body_col, arr_col, ctr_col = 'green', 'orange', 'green'
+        elif i == n - 1:
+            body_col, arr_col, ctr_col = 'red', 'orange', 'red'
+        else:
+            body_col, arr_col, ctr_col = 'tab:blue', 'orange', 'orange'
+        draw_robot(ax, history[i], robot_radius=r_robot, dir_len=d_arrow, color=body_col, arrow_color=arr_col, center_color=ctr_col)
+
+    # Assicura che l'ultima posa sia sempre disegnata (anche se non cade sulla griglia)
+    if n > 0 and ((n - 1) % step != 0 or n == 1):
+        draw_robot(ax, history[-1], robot_radius=r_robot, dir_len=d_arrow, color='red', arrow_color='orange', center_color='red')
 
     # Limiti che includono anche le frecce e i cerchi
     x0, x1, y0, y1 = _compute_axes_limits_with_glyphs(history, step, r_robot, d_arrow)
@@ -303,7 +317,16 @@ def show_trajectories_carousel(
         # Dimensioni adattive per il robot sulla traiettoria corrente
         r_robot, d_arrow = _robot_scale_from_history(hist)
         for i in range(0, n, step):  # Robot a intervalli regolari
-            draw_robot(ax, hist[i], robot_radius=r_robot, dir_len=d_arrow)
+            if i == 0:
+                body_col, arr_col, ctr_col = 'green', 'orange', 'green'
+            elif i == n - 1:
+                body_col, arr_col, ctr_col = 'red', 'orange', 'red'
+            else:
+                body_col, arr_col, ctr_col = 'tab:blue', 'orange', 'orange'
+            draw_robot(ax, hist[i], robot_radius=r_robot, dir_len=d_arrow, color=body_col, arrow_color=arr_col, center_color=ctr_col)
+        # Assicura ultima posa sempre disegnata
+        if n > 0 and ((n - 1) % step != 0 or n == 1):
+            draw_robot(ax, hist[-1], robot_radius=r_robot, dir_len=d_arrow, color='red', arrow_color='orange', center_color='red')
         # Limiti che includono anche frecce e cerchi
         x0, x1, y0, y1 = _compute_axes_limits_with_glyphs(hist, step, r_robot, d_arrow)
         ax.set_xlim(x0, x1)
@@ -432,7 +455,16 @@ def save_trajectories_images(histories, titles, show_orient_every=20):
         # Dimensioni adattive per il robot anche nei salvataggi batch
         r_robot, d_arrow = _robot_scale_from_history(hist)
         for i in range(0, n, step):  # Pose sparse per orientamento
-            draw_robot(ax, hist[i], robot_radius=r_robot, dir_len=d_arrow)
+            if i == 0:
+                body_col, arr_col, ctr_col = 'green', 'orange', 'green'
+            elif i == n - 1:
+                body_col, arr_col, ctr_col = 'red', 'orange', 'red'
+            else:
+                body_col, arr_col, ctr_col = 'tab:blue', 'orange', 'orange'
+            draw_robot(ax, hist[i], robot_radius=r_robot, dir_len=d_arrow, color=body_col, arrow_color=arr_col, center_color=ctr_col)
+        # Assicura ultima posa sempre disegnata
+        if n > 0 and ((n - 1) % step != 0 or n == 1):
+            draw_robot(ax, hist[-1], robot_radius=r_robot, dir_len=d_arrow, color='red', arrow_color='orange', center_color='red')
         # Limiti che includono anche frecce e cerchi
         x0, x1, y0, y1 = _compute_axes_limits_with_glyphs(hist, step, r_robot, d_arrow)
         ax.set_xlim(x0, x1)
