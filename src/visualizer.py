@@ -122,8 +122,8 @@ def _robot_scale_from_history(history):
     y_range = float(np.ptp(history[:, 1]))  # max-min su y
     # Scala di riferimento: estensione massima tra x e y, con un minimo per evitare raggio nullo
     ref = max(x_range, y_range, 1.0)
-    # Raggio ~3% dell'estensione; limite minimo per non scomparire su traiettorie molto piccole
-    robot_radius = max(0.05, 0.03 * ref)
+    # Raggio ~1.2% dell'estensione; minimo assoluto ridotto per figure compatte
+    robot_radius = max(0.02, 0.012 * ref)
     # Freccia ~2.5× raggio
     dir_len = 2.5 * robot_radius
     return robot_radius, dir_len
