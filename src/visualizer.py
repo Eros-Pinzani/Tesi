@@ -278,9 +278,46 @@ def show_trajectories_carousel(
     fig, ax = plt.subplots(figsize=(7, 7))
     plt.subplots_adjust(bottom=0.18)  # Lascia spazio ai pulsanti
 
-    # Stato interno dell'indice corrente
-    state = {"idx": 0, "show_info": bool(show_info)}
-    info_artist = None  # handle del box info (fig.text), gestito come variabile di chiusura
+    # Stato interno dell'indice corrente + player
+    state = {"idx": 0, "show_info": bool(show_info), "playing": False, "frame": 0}
+    info_artist = None  # handle del box info (fig.text)
+    moving_artists = []  # lista di patch dell'istanza mobile da rimuovere/aggiornare
+
+    # Timer per il player
+    timer = fig.canvas.new_timer(interval=int(dts_resolved[0] * 1000))
+
+    def _set_timer_interval_for_current():
+        # Aggiorna intervallo in ms in base al dt della traiettoria corrente
+        cur_dt = max(1e-6, float(dts_resolved[state["idx"]]))
+        try:
+            timer.interval = int(round(cur_dt * 1000))
+        except Exception:
+            # Alcuni backend usano set_interval
+            if hasattr(timer, 'set_interval'):
+                timer.set_interval(int(round(cur_dt * 1000)))
+
+    def _clear_moving():
+        nonlocal moving_artists
+        if moving_artists:
+            for art in moving_artists:
+                try:
+                    art.remove()
+                except Exception:
+                    pass
+            moving_artists = []
+
+    def _draw_moving_at(k: int):
+        """Disegna il robot mobile alla posa k, rimuovendo quello precedente."""
+        nonlocal moving_artists
+        _clear_moving()
+        hist = histories[state["idx"]]
+        k = int(max(0, min(k, len(hist) - 1)))
+        # Cattura i patch creati da draw_robot per poterli rimuovere al prossimo frame
+        before = len(ax.patches)
+        draw_robot(ax, hist[k], robot_radius=_robot_scale_from_history(hist)[0], dir_len=_robot_scale_from_history(hist)[1], color='tab:blue', arrow_color='orange', center_color='orange')
+        after = len(ax.patches)
+        if after > before:
+            moving_artists = ax.patches[before:after]
 
     # Box legenda statico (alto-sinistra, fuori dal grafico)
     if show_legend:
@@ -306,6 +343,14 @@ def show_trajectories_carousel(
     def draw_current():
         """Disegna la traiettoria corrente (pulisce l'axes e ridisegna)."""
         nonlocal info_artist
+        # Stoppa il player mentre si ridisegna/si cambia traiettoria
+        state["playing"] = False
+        try:
+            timer.stop()
+        except Exception:
+            pass
+        _clear_moving()
+
         ax.clear()  # Pulisce l'axes
         hist = histories[state["idx"]]
         title = titles[state["idx"]]
@@ -313,7 +358,6 @@ def show_trajectories_carousel(
         # Linea nera (senza marker) come sfondo
         ax.plot(hist[:, 0], hist[:, 1], '-', linewidth=1.5, color='k', zorder=0)
         step = _resolve_show_every(state["idx"])  # passo specifico per traiettoria
-        # (RIMOSSO) marker neri
         # Dimensioni adattive per il robot sulla traiettoria corrente
         r_robot, d_arrow = _robot_scale_from_history(hist)
         for i in range(0, n, step):  # Robot a intervalli regolari
@@ -368,7 +412,91 @@ def show_trajectories_carousel(
                 f"v={v_k:.2f} m/s,  ω={w_k:.2f} rad/s\n"
                 f"x={x_k:.2f} m,  y={y_k:.2f} m,  θ={th_k:.2f} rad"
             )
-            if info_artist is None:
+            # Ricrea sempre il box info (evita chiamate a set_text/set_visible)
+            if info_artist is not None:
+                try:
+                    info_artist.remove()
+                except Exception:
+                    pass
+            info_artist = fig.text(
+                0.98,
+                0.96,
+                info_text,
+                ha='right',
+                va='top',
+                fontsize=9,
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.85, edgecolor='0.7'),
+            )
+        else:
+            # Rimuove il box se presente
+            if info_artist is not None:
+                try:
+                    info_artist.remove()
+                except Exception:
+                    pass
+                info_artist = None
+
+        # Inizializza frame corrente e robot mobile all'inizio
+        state["frame"] = 0
+        _draw_moving_at(0)
+        _set_timer_interval_for_current()
+        fig.canvas.draw_idle()  # Aggiorna il rendering
+        if save_each:
+            out_path = _default_save_path(title)
+            fig.savefig(out_path, dpi=120, bbox_inches='tight')
+            print(f"Figura salvata in: {out_path}")
+
+    # Callback timer: avanza un frame secondo dt
+    def _on_timer():
+        nonlocal info_artist
+        idx = state["idx"]
+        hist = histories[idx]
+        n = len(hist)
+        k = state["frame"] + 1
+        if k >= n:
+            # Stoppa a fine traiettoria
+            state["playing"] = False
+            try:
+                timer.stop()
+            except Exception:
+                pass
+            # Aggiorna label del pulsante play
+            try:
+                btn_play.label.set_text('Play ⯈')
+            except Exception:
+                pass
+            return
+        state["frame"] = k
+        _draw_moving_at(k)
+        # Aggiorna pannello info in tempo reale se attivo
+        if state["show_info"]:
+            try:
+                dt_cur = float(dts_resolved[idx])
+                if commands_list is not None and commands_list[idx] is not None:
+                    cmd = commands_list[idx]
+                    k_cmd = max(0, min(k - 1, len(cmd) - 1))
+                    v_k, w_k = float(cmd[k_cmd][0]), float(cmd[k_cmd][1])
+                else:
+                    # Stima da history tra k-1 e k
+                    dx = float(hist[k][0] - hist[k - 1][0])
+                    dy = float(hist[k][1] - hist[k - 1][1])
+                    dth = float(hist[k][2] - hist[k - 1][2])
+                    v_k = (dx**2 + dy**2) ** 0.5 / max(dt_cur, 1e-9)
+                    dth = (dth + np.pi) % (2 * np.pi) - np.pi
+                    w_k = dth / max(dt_cur, 1e-9)
+                t_k = k * dt_cur
+                x_k, y_k, th_k = hist[k]
+                info_text = (
+                    f"k={k}  t={t_k:.2f} s\n"
+                    f"v={v_k:.2f} m/s,  ω={w_k:.2f} rad/s\n"
+                    f"x={x_k:.2f} m,  y={y_k:.2f} m,  θ={th_k:.2f} rad"
+                )
+                # Ricrea sempre il box info (evita chiamate a set_text/set_visible)
+                if info_artist is not None:
+                    try:
+                        info_artist.remove()
+                    except Exception:
+                        pass
                 info_artist = fig.text(
                     0.98,
                     0.96,
@@ -378,45 +506,76 @@ def show_trajectories_carousel(
                     fontsize=9,
                     bbox=dict(boxstyle='round', facecolor='white', alpha=0.85, edgecolor='0.7'),
                 )
-            else:
-                info_artist.set_text(info_text)
-                info_artist.set_visible(True)
-        else:
-            # Nasconde il box se presente
-            if info_artist is not None:
-                info_artist.set_visible(False)
-        fig.canvas.draw_idle()  # Aggiorna il rendering
-        if save_each:
-            out_path = _default_save_path(title)
-            fig.savefig(out_path, dpi=120, bbox_inches='tight')
-            print(f"Figura salvata in: {out_path}")
+            except Exception:
+                pass
+        fig.canvas.draw_idle()
 
-    # Pulsante PRECEDENTE
-    ax_prev = fig.add_axes((0.20, 0.05, 0.20, 0.08))  # [left, bottom, width, height] in coord figure
+    timer.add_callback(_on_timer)
+
+    # Pulsanti: PRECEDENTE, PLAY/PAUSA, SUCCESSIVO
+    ax_prev = fig.add_axes((0.16, 0.05, 0.20, 0.08))
     btn_prev = Button(ax_prev, '⟨ Precedente')
 
-    # Pulsante SUCCESSIVO
-    ax_next = fig.add_axes((0.60, 0.05, 0.20, 0.08))
+    ax_play = fig.add_axes((0.40, 0.05, 0.20, 0.08))
+    btn_play = Button(ax_play, 'Play ⯈')
+
+    ax_next = fig.add_axes((0.64, 0.05, 0.20, 0.08))
     btn_next = Button(ax_next, 'Successivo ⟩')
 
     def on_prev(event):
-        state["idx"] = (state["idx"] - 1) % len(histories)  # Indice circolare
+        # Cambia traiettoria indietro, resetta player
+        state["idx"] = (state["idx"] - 1) % len(histories)
+        state["playing"] = False
+        try:
+            timer.stop()
+        except Exception:
+            pass
+        btn_play.label.set_text('Play ⯈')
         draw_current()
 
     def on_next(event):
+        # Cambia traiettoria avanti, resetta player
         state["idx"] = (state["idx"] + 1) % len(histories)
+        state["playing"] = False
+        try:
+            timer.stop()
+        except Exception:
+            pass
+        btn_play.label.set_text('Play ⯈')
         draw_current()
 
+    def on_play(event):
+        # Toggle Play/Pausa
+        if not state["playing"]:
+            state["playing"] = True
+            _set_timer_interval_for_current()
+            try:
+                timer.start()
+            except Exception:
+                pass
+            btn_play.label.set_text('Pausa ⏸')
+        else:
+            state["playing"] = False
+            try:
+                timer.stop()
+            except Exception:
+                pass
+            btn_play.label.set_text('Play ⯈')
+
     btn_prev.on_clicked(on_prev)
+    btn_play.on_clicked(on_play)
     btn_next.on_clicked(on_next)
 
-    # Scorciatoie da tastiera: sinistra/destra per navigare, 'q' per chiudere
+    # Scorciatoie da tastiera: sinistra/destra per navigare, spazio per play/pausa, 'q' per chiudere
     def on_key(event):
-        if event.key in ('left', 'a'):
+        key = getattr(event, 'key', None)
+        if key in ('left', 'a'):
             on_prev(event)
-        elif event.key in ('right', 'd'):
+        elif key in ('right', 'd'):
             on_next(event)
-        elif event.key in ('q', 'escape'):
+        elif key in (' ', 'space'):
+            on_play(event)
+        elif key in ('q', 'escape'):
             plt.close(fig)
     fig.canvas.mpl_connect('key_press_event', on_key)
 
