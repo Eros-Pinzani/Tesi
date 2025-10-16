@@ -10,15 +10,14 @@ from matplotlib.widgets import Button  # Pulsanti UI per navigare tra i grafici
 from matplotlib import transforms as mtransforms
 from typing import Optional
 from matplotlib.text import Text
+from contextlib import suppress
 
 
-# Helper per rimuovere in sicurezza un artista matplotlib (gestisce None e eccezioni)
+# Helper per rimuovere in sicurezza un artista matplotlib (gestisce None ed eccezioni)
 def _safe_remove_artist(artist: Optional[object]):
-    try:
-        if artist is not None and hasattr(artist, 'remove'):
+    if artist is not None and hasattr(artist, 'remove'):
+        with suppress(Exception):
             artist.remove()  # type: ignore[attr-defined]
-    except Exception:
-        pass
 
 
 def _rect_dims_from_radius(robot_radius: float):
@@ -59,7 +58,7 @@ def draw_robot(ax, state, robot_radius=0.1, color='tab:blue', dir_len=None, arro
     # Dimensioni rettangolo: lato lungo allineato con theta (direzione di marcia), fronte = lato corto
     width, length = _rect_dims_from_radius(robot_radius)
 
-    # Rettangolo in frame locale con asse lungo lungo x-locale
+    # Rettangolo in frame locale con asse lungo allineato con x-locale
     rect = Rectangle((-length/2.0, -width/2.0), length, width, linewidth=1.0, facecolor=color, alpha=0.3, edgecolor='k', zorder=3)
     trans = mtransforms.Affine2D().rotate(th).translate(x, y) + ax.transData
     rect.set_transform(trans)
@@ -117,7 +116,6 @@ def _default_save_path(title: str) -> Path:
     project_root = Path(__file__).resolve().parents[1]
     img_dir = project_root / 'img'
     img_dir.mkdir(parents=True, exist_ok=True)  # Crea la cartella se non esiste
-    # Sanitizzo il titolo per usarlo come nome file
     base = title.lower().strip() or 'traiettoria'
     base = re.sub(r'\s+', '_', base)
     base = re.sub(r'[^a-z0-9_\-]', '', base)
@@ -184,6 +182,133 @@ def _compute_axes_limits_with_glyphs(history, step, r_robot, d_arrow):
     return x_min - pad, x_max + pad, y_min - pad, y_max + pad
 
 
+# Helper privato per disegnare una singola traiettoria statica sugli axes
+# Centralizza la logica ripetuta in plot_trajectory, show_trajectories_carousel e save_trajectories_images
+# Restituisce (r_robot, d_arrow) calcolati per la traiettoria
+
+def _plot_static_trajectory_on_axes(
+    ax,
+    hist: np.ndarray,
+    step: int,
+    title: Optional[str] = None,
+    include_title: bool = True,
+    include_axis_labels: bool = True,
+):
+    n = len(hist)
+    step = max(1, int(step))
+    # Linea della traiettoria (nera) come sfondo
+    ax.plot(hist[:, 0], hist[:, 1], '-', linewidth=1.5, color='k', zorder=0)
+    # Scala robot e freccia
+    r_robot, d_arrow = _robot_scale_from_history(hist)
+    # Pose sparse
+    for i in range(0, n, step):
+        if i == 0:
+            body_col, arr_col, ctr_col = 'green', 'orange', 'green'
+        elif i == n - 1:
+            body_col, arr_col, ctr_col = 'red', 'orange', 'red'
+        else:
+            body_col, arr_col, ctr_col = 'tab:blue', 'orange', 'orange'
+        draw_robot(ax, hist[i], robot_radius=r_robot, dir_len=d_arrow, color=body_col, arrow_color=arr_col, center_color=ctr_col)
+    # Assicura l'ultima posa
+    if n > 0 and ((n - 1) % step != 0 or n == 1):
+        draw_robot(ax, hist[-1], robot_radius=r_robot, dir_len=d_arrow, color='red', arrow_color='orange', center_color='red')
+
+    # Limiti che includono frecce/cerchi
+    x0, x1, y0, y1 = _compute_axes_limits_with_glyphs(hist, step, r_robot, d_arrow)
+    ax.set_xlim(x0, x1)
+    ax.set_ylim(y0, y1)
+
+    # Aspetto e opzioni
+    ax.set_aspect('equal', 'box')
+    ax.grid(False)
+    if include_axis_labels:
+        ax.set_xlabel("x [m]")
+        ax.set_ylabel("y [m]")
+    if include_title and title is not None:
+        ax.set_title(title)
+
+    return r_robot, d_arrow
+
+
+def _build_info_text(
+    hist: np.ndarray,
+    k_pose: int,
+    dt: float,
+    commands: Optional[np.ndarray] = None,
+    *,
+    use_cmd_of_prev: bool = True,
+    show_next_pose: bool = False,
+) -> str:
+    """Crea la stringa info per il pannello.
+    - hist: array (N x 3) [x, y, th]
+    - k_pose: indice della posa corrente da mostrare
+    - dt: passo temporale
+    - commands: opzionale (M x 2) [v, w]
+    - use_cmd_of_prev: se True usa comando k_pose-1, altrimenti k_pose (clip in range)
+    - show_next_pose: se True mostra la posa k_pose+1 (clip a N-1), altrimenti k_pose
+    """
+    N = int(len(hist) if hist is not None else 0)
+    dt = float(max(dt, 1e-9))
+    k_pose = int(max(0, min(k_pose, max(N - 1, 0))))
+
+    # v, w: da comandi (se disponibili) oppure stimati da history
+    v_k: float
+    w_k: float
+    if commands is not None and len(commands) > 0:
+        cmd_idx = (k_pose - 1) if use_cmd_of_prev else k_pose
+        cmd_idx = int(max(0, min(cmd_idx, len(commands) - 1)))
+        v_k = float(commands[cmd_idx][0])
+        w_k = float(commands[cmd_idx][1])
+    else:
+        if N >= 2:
+            k2 = int(max(1, min(k_pose, N - 1)))
+            k1 = k2 - 1
+            dx = float(hist[k2][0] - hist[k1][0])
+            dy = float(hist[k2][1] - hist[k1][1])
+            dth = float(hist[k2][2] - hist[k1][2])
+            v_k = (dx**2 + dy**2) ** 0.5 / dt
+            dth = (dth + np.pi) % (2 * np.pi) - np.pi
+            w_k = dth / dt
+        else:
+            v_k = 0.0
+            w_k = 0.0
+
+    # Tempo e posa da visualizzare
+    t_k = float(k_pose) * dt
+    if show_next_pose and N > 0:
+        pose_idx = int(min(k_pose + 1, N - 1))
+    else:
+        pose_idx = int(k_pose)
+
+    if N > 0:
+        x_k, y_k, th_k = map(float, hist[pose_idx])
+    else:
+        x_k = y_k = th_k = 0.0
+
+    info_text = (
+        f"k={k_pose}  t={t_k:.2f} s\n"
+        f"v={v_k:.2f} m/s,  ω={w_k:.2f} rad/s\n"
+        f"x={x_k:.2f} m,  y={y_k:.2f} m,  ϑ={th_k:.2f} rad"
+    )
+    return info_text
+
+
+def _update_info_artist(fig, info_artist: Optional[Text], info_text: str) -> Text:
+    """Rimuove il box info precedente (se presente) e crea un nuovo fig.text standard.
+    Ritorna il nuovo artista Text creato."""
+    if info_artist is not None:
+        _safe_remove_artist(info_artist)
+    return fig.text(
+        0.98,
+        0.96,
+        info_text,
+        ha='right',
+        va='top',
+        fontsize=9,
+        bbox=dict(boxstyle='round', facecolor='white', alpha=0.85, edgecolor='0.7'),
+    )
+
+
 def plot_trajectory(history, show_orient_every=20, title="Traiettoria del robot", save_path=None):
     """Plotta la traiettoria del robot e disegna il robot a intervalli regolari.
     Se save_path è fornito salva la figura su file; altrimenti salva automaticamente in Tesi/img.
@@ -195,45 +320,9 @@ def plot_trajectory(history, show_orient_every=20, title="Traiettoria del robot"
     # Crea una figura quadrata per non distorcere la forma della traiettoria
     fig, ax = plt.subplots(figsize=(7, 7))  # fig è l'oggetto figura, ax gli assi su cui si disegna
 
-    n = len(history)
-    # Linea della traiettoria (nera) come sfondo
-    ax.plot(history[:, 0], history[:, 1], '-', linewidth=1.5, color='k', zorder=0)
+    # Usa helper centralizzato per disegnare
     step = max(1, int(show_orient_every))
-    # (RIMOSSO) marker neri: lasciamo solo il pallino arancione del robot
-
-    # Calcola dimensione robot e freccia in modo adattivo rispetto alla traiettoria
-    r_robot, d_arrow = _robot_scale_from_history(history)
-
-    # Disegna il robot usando direttamente [x, y, theta] dallo stato
-    for i in range(0, n, step):
-        # Colori: primo verde, ultimo rosso, altri blu con freccia arancione
-        if i == 0:
-            body_col, arr_col, ctr_col = 'green', 'orange', 'green'
-        elif i == n - 1:
-            body_col, arr_col, ctr_col = 'red', 'orange', 'red'
-        else:
-            body_col, arr_col, ctr_col = 'tab:blue', 'orange', 'orange'
-        draw_robot(ax, history[i], robot_radius=r_robot, dir_len=d_arrow, color=body_col, arrow_color=arr_col, center_color=ctr_col)
-
-    # Assicura che l'ultima posa sia sempre disegnata (anche se non cade sulla griglia)
-    if n > 0 and ((n - 1) % step != 0 or n == 1):
-        draw_robot(ax, history[-1], robot_radius=r_robot, dir_len=d_arrow, color='red', arrow_color='orange', center_color='red')
-
-    # Limiti che includono anche le frecce e i cerchi
-    x0, x1, y0, y1 = _compute_axes_limits_with_glyphs(history, step, r_robot, d_arrow)
-    ax.set_xlim(x0, x1)
-    ax.set_ylim(y0, y1)
-
-    # Imposta proporzioni uguali sugli assi per non deformare la geometria
-    ax.set_aspect('equal', 'box')
-
-    # Etichette degli assi con unità di misura
-    ax.set_xlabel("x [m]")
-    ax.set_ylabel("y [m]")
-
-    # Griglia disattivata e titolo
-    ax.grid(False)
-    ax.set_title(title)
+    _plot_static_trajectory_on_axes(ax, history, step=step, title=title, include_title=True, include_axis_labels=True)
 
     # Determina il percorso di salvataggio
     out_path = Path(save_path) if save_path else _default_save_path(title)
@@ -303,10 +392,8 @@ def show_trajectories_carousel(
         if not lst:
             return
         for art in lst:
-            try:
+            with suppress(Exception):
                 art.remove()
-            except Exception:
-                pass
         lst.clear()
 
     def _draw_prev_icon(ax_btn):
@@ -354,22 +441,17 @@ def show_trajectories_carousel(
     def _set_timer_interval_for_current():
         # Aggiorna intervallo in ms in base al dt della traiettoria corrente
         cur_dt = max(1e-6, float(dts_resolved[state["idx"]]))
-        try:
-            timer.interval = int(round(cur_dt * 1000))
-        except Exception:
-            # Alcuni backend usano set_interval
+        interval_ms = int(round(cur_dt * 1000))
+        # Tenta entrambi i metodi senza sollevare: mantiene il comportamento (prima attributo, poi fallback)
+        with suppress(Exception):
+            timer.interval = interval_ms
+        with suppress(Exception):
             if hasattr(timer, 'set_interval'):
-                timer.set_interval(int(round(cur_dt * 1000)))
+                timer.set_interval(interval_ms)
 
     def _clear_moving():
         nonlocal moving_artists
-        if moving_artists:
-            for art in moving_artists:
-                try:
-                    art.remove()
-                except Exception:
-                    pass
-            moving_artists = []
+        _clear_artists(moving_artists)
 
     def _draw_moving_at(k: int):
         """Disegna il robot mobile alla posa k, rimuovendo quello precedente."""
@@ -411,41 +493,18 @@ def show_trajectories_carousel(
         nonlocal info_artist
         # Stoppa il player mentre si ridisegna/si cambia traiettoria
         state["playing"] = False
-        try:
+        with suppress(Exception):
             timer.stop()
-        except Exception:
-            pass
         _clear_moving()
 
         ax.clear()  # Pulisce l'axes
         hist = histories[state["idx"]]
         title = titles[state["idx"]]
         n = len(hist)
-        # Linea nera (senza marker) come sfondo
-        ax.plot(hist[:, 0], hist[:, 1], '-', linewidth=1.5, color='k', zorder=0)
         step = _resolve_show_every(state["idx"])  # passo specifico per traiettoria
-        # Dimensioni adattive per il robot sulla traiettoria corrente
-        r_robot, d_arrow = _robot_scale_from_history(hist)
-        for i in range(0, n, step):  # Robot a intervalli regolari
-            if i == 0:
-                body_col, arr_col, ctr_col = 'green', 'orange', 'green'
-            elif i == n - 1:
-                body_col, arr_col, ctr_col = 'red', 'orange', 'red'
-            else:
-                body_col, arr_col, ctr_col = 'tab:blue', 'orange', 'orange'
-            draw_robot(ax, hist[i], robot_radius=r_robot, dir_len=d_arrow, color=body_col, arrow_color=arr_col, center_color=ctr_col)
-        # Assicura ultima posa sempre disegnata
-        if n > 0 and ((n - 1) % step != 0 or n == 1):
-            draw_robot(ax, hist[-1], robot_radius=r_robot, dir_len=d_arrow, color='red', arrow_color='orange', center_color='red')
-        # Limiti che includono anche frecce e cerchi
-        x0, x1, y0, y1 = _compute_axes_limits_with_glyphs(hist, step, r_robot, d_arrow)
-        ax.set_xlim(x0, x1)
-        ax.set_ylim(y0, y1)
-        ax.set_aspect('equal', 'box')
-        ax.set_xlabel("x [m]")
-        ax.set_ylabel("y [m]")
-        ax.grid(False)
-        ax.set_title(title)
+
+        # Disegno statico tramite helper centralizzato
+        _plot_static_trajectory_on_axes(ax, hist, step=step, title=title, include_title=True, include_axis_labels=True)
 
         # Pannello informazioni opzionale (controllato dal parametro)
         if state["show_info"]:
@@ -453,43 +512,16 @@ def show_trajectories_carousel(
             dt_cur = dts_resolved[idx]
             # Seleziona un indice "frame" rappresentativo: ultimo disegnato dalla griglia
             last_draw_idx = ((n - 1) // step) * step  # in [0, n-1]
-            # Map in spazio comandi (che tipicamente ha lunghezza n-1)
-            if commands_list is not None and commands_list[idx] is not None:
-                cmd = commands_list[idx]
-                k_cmd_max = len(cmd) - 1
-                k = max(0, min(last_draw_idx, k_cmd_max))
-                v_k, w_k = float(cmd[k][0]), float(cmd[k][1])
-            else:
-                # Stima da history (se possibile)
-                k = max(1, min(last_draw_idx, n - 1))
-                dx = float(hist[k][0] - hist[k - 1][0])
-                dy = float(hist[k][1] - hist[k - 1][1])
-                dth = float(hist[k][2] - hist[k - 1][2])
-                v_k = (dx**2 + dy**2) ** 0.5 / max(dt_cur, 1e-9)
-                # Normalizzo dth su [-pi,pi] per stima omega
-                dth = (dth + np.pi) % (2 * np.pi) - np.pi
-                w_k = dth / max(dt_cur, 1e-9)
-            t_k = k * dt_cur
-            # Stato da mostrare: pose successiva se disponibile (effetto del comando k)
-            pose_idx = min(k + 1, n - 1)
-            x_k, y_k, th_k = hist[pose_idx]
-            info_text = (
-                f"k={k}  t={t_k:.2f} s\n"
-                f"v={v_k:.2f} m/s,  ω={w_k:.2f} rad/s\n"
-                f"x={x_k:.2f} m,  y={y_k:.2f} m,  θ={th_k:.2f} rad"
+            cmds = commands_list[idx] if commands_list is not None else None
+            info_text = _build_info_text(
+                hist,
+                k_pose=int(last_draw_idx),
+                dt=float(dt_cur),
+                commands=cmds,
+                use_cmd_of_prev=False,
+                show_next_pose=True,
             )
-            # Ricrea sempre il box info (evita chiamate a set_text/set_visible)
-            if info_artist is not None:
-                _safe_remove_artist(info_artist)
-            info_artist = fig.text(
-                0.98,
-                0.96,
-                info_text,
-                ha='right',
-                va='top',
-                fontsize=9,
-                bbox=dict(boxstyle='round', facecolor='white', alpha=0.85, edgecolor='0.7'),
-            )
+            info_artist = _update_info_artist(fig, info_artist, info_text)
         else:
             # Rimuove il box se presente
             _safe_remove_artist(info_artist)
@@ -515,56 +547,29 @@ def show_trajectories_carousel(
         if k >= n:
             # Stoppa a fine traiettoria
             state["playing"] = False
-            try:
+            with suppress(Exception):
                 timer.stop()
-            except Exception:
-                pass
             # Aggiorna icona e testo del pulsante play (stato fermo)
-            try:
+            with suppress(Exception):
                 _set_play_icon(ax_play, playing=False)
                 btn_play.label.set_text('Play')
-            except Exception:
-                pass
             return
         state["frame"] = k
         _draw_moving_at(k)
         # Aggiorna pannello info in tempo reale se attivo
         if state["show_info"]:
-            try:
+            with suppress(Exception):
                 dt_cur = float(dts_resolved[idx])
-                if commands_list is not None and commands_list[idx] is not None:
-                    cmd = commands_list[idx]
-                    k_cmd = max(0, min(k - 1, len(cmd) - 1))
-                    v_k, w_k = float(cmd[k_cmd][0]), float(cmd[k_cmd][1])
-                else:
-                    # Stima da history tra k-1 e k
-                    dx = float(hist[k][0] - hist[k - 1][0])
-                    dy = float(hist[k][1] - hist[k - 1][1])
-                    dth = float(hist[k][2] - hist[k - 1][2])
-                    v_k = (dx**2 + dy**2) ** 0.5 / max(dt_cur, 1e-9)
-                    dth = (dth + np.pi) % (2 * np.pi) - np.pi
-                    w_k = dth / max(dt_cur, 1e-9)
-                t_k = k * dt_cur
-                x_k, y_k, th_k = hist[k]
-                info_text = (
-                    f"k={k}  t={t_k:.2f} s\n"
-                    f"v={v_k:.2f} m/s,  ω={w_k:.2f} rad/s\n"
-                    f"x={x_k:.2f} m,  y={y_k:.2f} m,  θ={th_k:.2f} rad"
+                cmds = commands_list[idx] if commands_list is not None else None
+                info_text = _build_info_text(
+                    hist,
+                    k_pose=int(k),
+                    dt=dt_cur,
+                    commands=cmds,
+                    use_cmd_of_prev=True,
+                    show_next_pose=False,
                 )
-                # Ricrea sempre il box info (evita chiamate a set_text/set_visible)
-                if info_artist is not None:
-                    _safe_remove_artist(info_artist)
-                info_artist = fig.text(
-                    0.98,
-                    0.96,
-                    info_text,
-                    ha='right',
-                    va='top',
-                    fontsize=9,
-                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.85, edgecolor='0.7'),
-                )
-            except Exception:
-                pass
+                info_artist = _update_info_artist(fig, info_artist, info_text)
         fig.canvas.draw_idle()
 
     timer.add_callback(_on_timer)
@@ -581,17 +586,13 @@ def show_trajectories_carousel(
 
     # Funzione di layout UNIFORME: stessa dimensione font per tutte le etichette
     def _layout_all_button_labels_uniform():
-        try:
+        with suppress(Exception):
             fig.canvas.draw()
-        except Exception:
-            pass
         # Recupero renderer compatibile
         renderer = None
-        try:
-            get_r = getattr(fig.canvas, 'get_renderer', None)
+        get_r = getattr(fig.canvas, 'get_renderer', None)
+        with suppress(Exception):
             renderer = get_r() if callable(get_r) else getattr(fig.canvas, 'renderer', None)
-        except Exception:
-            renderer = None
         if renderer is None:
             return
         # Costanti di layout per icone e margini
@@ -605,8 +606,8 @@ def show_trajectories_carousel(
         play_icon_right_x = 0.58
         next_icon_left_x = 0.60
         # Ripristina testo pieno e allineamenti/ancore iniziali
-        labels = [(btn_prev.label, 'prev'), (btn_play.label, 'play'), (btn_next.label, 'next')]
-        for lab, kind in labels:
+        btn_labels = [(btn_prev.label, 'prev'), (btn_play.label, 'play'), (btn_next.label, 'next')]
+        for lab, kind in btn_labels:
             cur_txt = lab.get_text()
             full_txt = getattr(lab, '_full_text', None)
             if full_txt is None or (cur_txt != full_txt and not cur_txt.endswith('…')):
@@ -621,36 +622,34 @@ def show_trajectories_carousel(
                 lab.set_horizontalalignment('left')
                 lab.set_verticalalignment('center')
                 lab.set_position((left_pad, 0.50))
-        try:
+        with suppress(Exception):
             fig.canvas.draw()
-        except Exception:
-            pass
+
+        def _avail_for_kind(kind_name: str) -> float:
+            if kind_name == 'prev':
+                anchor_x = 1.0 - right_pad
+                return max(0.0, anchor_x - (prev_icon_right_x + min_gap_prev))
+            elif kind_name == 'play':
+                anchor_x = 1.0 - right_pad
+                return max(0.0, anchor_x - (play_icon_right_x + min_gap_play))
+            else:  # next
+                anchor_x = left_pad
+                return max(0.0, (next_icon_left_x - min_gap_next) - anchor_x)
+
         # Ricerca della massima dimensione font uniforme che entra per tutti
         max_fs = 12.0
         min_fs = 7.0
-        step = 0.5
-        def fits_all(fs: float) -> bool:
-            for lab, kind in labels:
-                lab.set_fontsize(fs)
-                try:
+        fs_step = 0.5
+        def fits_all(test_fs: float) -> bool:
+            for lab0, kind0 in btn_labels:
+                lab0.set_fontsize(test_fs)
+                with suppress(Exception):
                     fig.canvas.draw()
-                except Exception:
-                    pass
-                ax_bbox = lab.axes.get_window_extent(renderer=renderer)
-                txt_bbox = lab.get_window_extent(renderer=renderer)
-                text_w_axes = txt_bbox.width / max(ax_bbox.width, 1.0)
-                if kind == 'prev':
-                    anchor_x = 1.0 - right_pad
-                    icon_right_x = prev_icon_right_x
-                    avail = max(0.0, anchor_x - (icon_right_x + min_gap_prev))
-                elif kind == 'play':
-                    anchor_x = 1.0 - right_pad
-                    icon_right_x = play_icon_right_x
-                    avail = max(0.0, anchor_x - (icon_right_x + min_gap_play))
-                else:  # next
-                    anchor_x = left_pad
-                    avail = max(0.0, (next_icon_left_x - min_gap_next) - anchor_x)
-                if text_w_axes > avail + 1e-6:
+                ax_bbox_i = lab0.axes.get_window_extent(renderer=renderer)
+                txt_bbox_i = lab0.get_window_extent(renderer=renderer)
+                text_w_axes_i = txt_bbox_i.width / max(ax_bbox_i.width, 1.0)
+                avail_i = _avail_for_kind(kind0)
+                if text_w_axes_i > avail_i + 1e-6:
                     return False
             return True
         # Trova il font size più grande che soddisfa tutti
@@ -660,46 +659,32 @@ def show_trajectories_carousel(
             if fits_all(fs):
                 chosen = fs
                 break
-            fs -= step
+            fs -= fs_step
         if chosen is None:
             chosen = min_fs
         # Applica font uniforme
-        for lab, _ in labels:
+        for lab, _ in btn_labels:
             lab.set_fontsize(chosen)
-        try:
+        with suppress(Exception):
             fig.canvas.draw()
-        except Exception:
-            pass
         # Troncamento con ellissi se ancora serve, mantenendo font uniforme
-        for lab, kind in labels:
-            ax_bbox = lab.axes.get_window_extent(renderer=renderer)
-            txt_bbox = lab.get_window_extent(renderer=renderer)
+        for lab2, kind2 in btn_labels:
+            ax_bbox = lab2.axes.get_window_extent(renderer=renderer)
+            txt_bbox = lab2.get_window_extent(renderer=renderer)
             text_w_axes = txt_bbox.width / max(ax_bbox.width, 1.0)
-            if kind == 'prev':
-                anchor_x = 1.0 - right_pad
-                icon_right_x = prev_icon_right_x
-                avail = max(0.0, anchor_x - (icon_right_x + min_gap_prev))
-            elif kind == 'play':
-                anchor_x = 1.0 - right_pad
-                icon_right_x = play_icon_right_x
-                avail = max(0.0, anchor_x - (icon_right_x + min_gap_play))
-            else:
-                anchor_x = left_pad
-                avail = max(0.0, (next_icon_left_x - min_gap_next) - anchor_x)
+            avail = _avail_for_kind(kind2)
             if text_w_axes > avail + 1e-6:
-                base = getattr(lab, '_full_text', lab.get_text()) or ''
+                base = getattr(lab2, '_full_text', lab2.get_text()) or ''
                 if not base:
                     continue
                 trunc = base
                 # Tronca finché non rientra o restano 3 char
                 while text_w_axes > avail + 1e-6 and len(trunc) > 3:
                     trunc = trunc[:-1]
-                    lab.set_text(trunc.rstrip() + '…')
-                    try:
+                    lab2.set_text(trunc.rstrip() + '…')
+                    with suppress(Exception):
                         fig.canvas.draw()
-                    except Exception:
-                        break
-                    txt_bbox = lab.get_window_extent(renderer=renderer)
+                    txt_bbox = lab2.get_window_extent(renderer=renderer)
                     text_w_axes = txt_bbox.width / max(ax_bbox.width, 1.0)
         # Fine layout uniforme
 
@@ -709,98 +694,60 @@ def show_trajectories_carousel(
     _draw_next_icon(ax_next)
 
     # Layout iniziale uniforme
-    try:
+    with suppress(Exception):
         _layout_all_button_labels_uniform()
-    except Exception:
-        pass
 
     # Rilayout su resize della finestra
-    try:
-        def _on_resize(event):
-            _layout_all_button_labels_uniform()
+    def _on_resize(_event):
+        _layout_all_button_labels_uniform()
+    with suppress(Exception):
         fig.canvas.mpl_connect('resize_event', _on_resize)
-    except Exception:
-        pass
 
-    def on_prev(event):
-        # Cambia traiettoria indietro, resetta player
-        state["idx"] = (state["idx"] - 1) % len(histories)
+    # Navigazione generica tra traiettorie (delta = -1 per precedente, +1 per successiva)
+    def _navigate(delta: int):
+        state["idx"] = (state["idx"] + int(delta)) % len(histories)
         state["playing"] = False
-        try:
+        with suppress(Exception):
             timer.stop()
-        except Exception:
-            pass
         _set_play_icon(ax_play, playing=False)
-        try:
+        with suppress(Exception):
             btn_play.label.set_text('Play')
-        except Exception:
-            pass
         draw_current()
-        try:
+        with suppress(Exception):
             _layout_all_button_labels_uniform()
-        except Exception:
-            pass
 
-    def on_next(event):
-        # Cambia traiettoria avanti, resetta player
-        state["idx"] = (state["idx"] + 1) % len(histories)
-        state["playing"] = False
-        try:
-            timer.stop()
-        except Exception:
-            pass
-        _set_play_icon(ax_play, playing=False)
-        try:
-            btn_play.label.set_text('Play')
-        except Exception:
-            pass
-        draw_current()
-        try:
-            _layout_all_button_labels_uniform()
-        except Exception:
-            pass
-
-    def on_play(event):
+    def on_play(_event):
         # Toggle Play/Pausa
         if not state["playing"]:
             state["playing"] = True
             _set_timer_interval_for_current()
-            try:
+            with suppress(Exception):
                 timer.start()
-            except Exception:
-                pass
             _set_play_icon(ax_play, playing=True)
-            try:
+            with suppress(Exception):
                 btn_play.label.set_text('Pausa')
-            except Exception:
-                pass
         else:
             state["playing"] = False
-            try:
+            with suppress(Exception):
                 timer.stop()
-            except Exception:
-                pass
             _set_play_icon(ax_play, playing=False)
-            try:
+            with suppress(Exception):
                 btn_play.label.set_text('Play')
-            except Exception:
-                pass
-        try:
+        with suppress(Exception):
             _layout_all_button_labels_uniform()
-        except Exception:
-            pass
 
-    btn_prev.on_clicked(on_prev)
+    # Collega i pulsanti direttamente alla navigazione
+    btn_prev.on_clicked(lambda _event: _navigate(-1))
     btn_play.on_clicked(on_play)
-    btn_next.on_clicked(on_next)
+    btn_next.on_clicked(lambda _event: _navigate(+1))
 
     # Scorciatoie da tastiera: sinistra/destra per navigare, spazio per play/pausa, 'q' per chiudere
     def on_key(event):
         key = getattr(event, 'key', None)
         if key in ('left', 'a'):
-            on_prev(event)
+            _navigate(-1)
         elif key in ('right', 'd'):
-            on_next(event)
+            _navigate(+1)
         elif key in (' ', 'space'):
             on_play(event)
         elif key in ('q', 'escape'):
@@ -831,34 +778,13 @@ def save_trajectories_images(histories, titles, show_orient_every=20):
             return max(1, int(show_orient_every[idx]))
         return max(1, int(show_orient_every))
 
-    for idx, (hist, title) in enumerate(zip(histories, titles)):
+    for i, (hist, title_str) in enumerate(zip(histories, titles)):
         # Crea figura temporanea per il solo salvataggio
         fig, ax = plt.subplots(figsize=(7, 7))
-        n = len(hist)
-        # Linea nera (senza marker) come sfondo
-        ax.plot(hist[:, 0], hist[:, 1], '-', linewidth=1.5, color='k', zorder=0)
-        step = _resolve_show_every(idx)
-        # (RIMOSSO) marker neri
-        # Dimensioni adattive per il robot anche nei salvataggi batch
-        r_robot, d_arrow = _robot_scale_from_history(hist)
-        for i in range(0, n, step):  # Pose sparse per orientamento
-            if i == 0:
-                body_col, arr_col, ctr_col = 'green', 'orange', 'green'
-            elif i == n - 1:
-                body_col, arr_col, ctr_col = 'red', 'orange', 'red'
-            else:
-                body_col, arr_col, ctr_col = 'tab:blue', 'orange', 'orange'
-            draw_robot(ax, hist[i], robot_radius=r_robot, dir_len=d_arrow, color=body_col, arrow_color=arr_col, center_color=ctr_col)
-        # Assicura ultima posa sempre disegnata
-        if n > 0 and ((n - 1) % step != 0 or n == 1):
-            draw_robot(ax, hist[-1], robot_radius=r_robot, dir_len=d_arrow, color='red', arrow_color='orange', center_color='red')
-        # Limiti che includono anche frecce e cerchi
-        x0, x1, y0, y1 = _compute_axes_limits_with_glyphs(hist, step, r_robot, d_arrow)
-        ax.set_xlim(x0, x1)
-        ax.set_ylim(y0, y1)
-        ax.set_aspect('equal', 'box')
-        ax.grid(False)
-        out_path = _default_save_path(title)  # Percorso nella cartella img
+        step = _resolve_show_every(i)
+        # Disegno statico tramite helper centralizzato (senza etichette/titolo per immagini pulite)
+        _plot_static_trajectory_on_axes(ax, hist, step=step, title=None, include_title=False, include_axis_labels=False)
+        out_path = _default_save_path(title_str)  # Percorso nella cartella img
         fig.savefig(out_path, dpi=120, bbox_inches='tight')  # Salvataggio su file
         print(f"Figura salvata in: {out_path}")
         plt.close(fig)  # Chiude la figura per non aprire finestre multiple
