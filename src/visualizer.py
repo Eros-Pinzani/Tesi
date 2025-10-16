@@ -1,13 +1,24 @@
 # Classe che ha il compito di plottare le traiettorie, disegnare il robot in alcuni istanti e salvare figure
 
 import matplotlib.pyplot as plt
-from matplotlib.patches import Circle, Rectangle
+from matplotlib.patches import Circle, Rectangle, Polygon
 import numpy as np
 from pathlib import Path  # Per costruire percorsi portabili
 import re
 from datetime import datetime
 from matplotlib.widgets import Button  # Pulsanti UI per navigare tra i grafici
 from matplotlib import transforms as mtransforms
+from typing import Optional
+from matplotlib.text import Text
+
+
+# Helper per rimuovere in sicurezza un artista matplotlib (gestisce None e eccezioni)
+def _safe_remove_artist(artist: Optional[object]):
+    try:
+        if artist is not None and hasattr(artist, 'remove'):
+            artist.remove()  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 
 def _rect_dims_from_radius(robot_radius: float):
@@ -280,8 +291,62 @@ def show_trajectories_carousel(
 
     # Stato interno dell'indice corrente + player
     state = {"idx": 0, "show_info": bool(show_info), "playing": False, "frame": 0}
-    info_artist = None  # handle del box info (fig.text)
+    info_artist: Optional[Text] = None  # handle del box info (fig.text)
     moving_artists = []  # lista di patch dell'istanza mobile da rimuovere/aggiornare
+
+    # Gestione icone vettoriali nei pulsanti
+    icon_prev_artists = []
+    icon_play_artists = []
+    icon_next_artists = []
+
+    def _clear_artists(lst):
+        if not lst:
+            return
+        for art in lst:
+            try:
+                art.remove()
+            except Exception:
+                pass
+        lst.clear()
+
+    def _draw_prev_icon(ax_btn):
+        nonlocal icon_prev_artists
+        _clear_artists(icon_prev_artists)
+        # Doppia freccia a sinistra (due triangoli) nella metà sinistra del bottone
+        tri1 = Polygon([[0.34, 0.30], [0.34, 0.70], [0.22, 0.50]], closed=True, transform=ax_btn.transAxes,
+                       facecolor='black', edgecolor='black', linewidth=1.0)
+        tri2 = Polygon([[0.46, 0.30], [0.46, 0.70], [0.34, 0.50]], closed=True, transform=ax_btn.transAxes,
+                       facecolor='black', edgecolor='black', linewidth=1.0)
+        icon_prev_artists.append(ax_btn.add_patch(tri1))
+        icon_prev_artists.append(ax_btn.add_patch(tri2))
+
+    def _draw_next_icon(ax_btn):
+        nonlocal icon_next_artists
+        _clear_artists(icon_next_artists)
+        # Doppia freccia a destra (due triangoli) nella metà destra del bottone
+        tri1 = Polygon([[0.60, 0.30], [0.60, 0.70], [0.72, 0.50]], closed=True, transform=ax_btn.transAxes,
+                       facecolor='black', edgecolor='black', linewidth=1.0)
+        tri2 = Polygon([[0.72, 0.30], [0.72, 0.70], [0.84, 0.50]], closed=True, transform=ax_btn.transAxes,
+                       facecolor='black', edgecolor='black', linewidth=1.0)
+        icon_next_artists.append(ax_btn.add_patch(tri1))
+        icon_next_artists.append(ax_btn.add_patch(tri2))
+
+    def _set_play_icon(ax_btn, playing: bool):
+        nonlocal icon_play_artists
+        _clear_artists(icon_play_artists)
+        if playing:
+            # Pausa: due barre verticali nella metà sinistra
+            r1 = Rectangle((0.36, 0.30), 0.08, 0.40, transform=ax_btn.transAxes,
+                           facecolor='black', edgecolor='black', linewidth=1.0)
+            r2 = Rectangle((0.50, 0.30), 0.08, 0.40, transform=ax_btn.transAxes,
+                           facecolor='black', edgecolor='black', linewidth=1.0)
+            icon_play_artists.append(ax_btn.add_patch(r1))
+            icon_play_artists.append(ax_btn.add_patch(r2))
+        else:
+            # Play: triangolo punta a destra nella metà sinistra
+            tri = Polygon([[0.34, 0.30], [0.34, 0.70], [0.58, 0.50]], closed=True, transform=ax_btn.transAxes,
+                          facecolor='black', edgecolor='black', linewidth=1.0)
+            icon_play_artists.append(ax_btn.add_patch(tri))
 
     # Timer per il player
     timer = fig.canvas.new_timer(interval=int(dts_resolved[0] * 1000))
@@ -314,7 +379,8 @@ def show_trajectories_carousel(
         k = int(max(0, min(k, len(hist) - 1)))
         # Cattura i patch creati da draw_robot per poterli rimuovere al prossimo frame
         before = len(ax.patches)
-        draw_robot(ax, hist[k], robot_radius=_robot_scale_from_history(hist)[0], dir_len=_robot_scale_from_history(hist)[1], color='tab:blue', arrow_color='orange', center_color='orange')
+        r_robot, d_arrow = _robot_scale_from_history(hist)
+        draw_robot(ax, hist[k], robot_radius=r_robot, dir_len=d_arrow, color='tab:blue', arrow_color='orange', center_color='orange')
         after = len(ax.patches)
         if after > before:
             moving_artists = ax.patches[before:after]
@@ -414,10 +480,7 @@ def show_trajectories_carousel(
             )
             # Ricrea sempre il box info (evita chiamate a set_text/set_visible)
             if info_artist is not None:
-                try:
-                    info_artist.remove()
-                except Exception:
-                    pass
+                _safe_remove_artist(info_artist)
             info_artist = fig.text(
                 0.98,
                 0.96,
@@ -429,12 +492,8 @@ def show_trajectories_carousel(
             )
         else:
             # Rimuove il box se presente
-            if info_artist is not None:
-                try:
-                    info_artist.remove()
-                except Exception:
-                    pass
-                info_artist = None
+            _safe_remove_artist(info_artist)
+            info_artist = None
 
         # Inizializza frame corrente e robot mobile all'inizio
         state["frame"] = 0
@@ -460,9 +519,10 @@ def show_trajectories_carousel(
                 timer.stop()
             except Exception:
                 pass
-            # Aggiorna label del pulsante play
+            # Aggiorna icona e testo del pulsante play (stato fermo)
             try:
-                btn_play.label.set_text('Play ⯈')
+                _set_play_icon(ax_play, playing=False)
+                btn_play.label.set_text('Play')
             except Exception:
                 pass
             return
@@ -493,10 +553,7 @@ def show_trajectories_carousel(
                 )
                 # Ricrea sempre il box info (evita chiamate a set_text/set_visible)
                 if info_artist is not None:
-                    try:
-                        info_artist.remove()
-                    except Exception:
-                        pass
+                    _safe_remove_artist(info_artist)
                 info_artist = fig.text(
                     0.98,
                     0.96,
@@ -513,14 +570,157 @@ def show_trajectories_carousel(
     timer.add_callback(_on_timer)
 
     # Pulsanti: PRECEDENTE, PLAY/PAUSA, SUCCESSIVO
-    ax_prev = fig.add_axes((0.16, 0.05, 0.20, 0.08))
-    btn_prev = Button(ax_prev, '⟨ Precedente')
+    ax_prev = fig.add_axes((0.16, 0.05, 0.22, 0.08))
+    btn_prev = Button(ax_prev, 'Precedente')  # label + icona
 
     ax_play = fig.add_axes((0.40, 0.05, 0.20, 0.08))
-    btn_play = Button(ax_play, 'Play ⯈')
+    btn_play = Button(ax_play, 'Play')  # label + icona
 
-    ax_next = fig.add_axes((0.64, 0.05, 0.20, 0.08))
-    btn_next = Button(ax_next, 'Successivo ⟩')
+    ax_next = fig.add_axes((0.64, 0.05, 0.24, 0.08))
+    btn_next = Button(ax_next, 'Successivo')  # label + icona
+
+    # Funzione di layout UNIFORME: stessa dimensione font per tutte le etichette
+    def _layout_all_button_labels_uniform():
+        try:
+            fig.canvas.draw()
+        except Exception:
+            pass
+        # Recupero renderer compatibile
+        renderer = None
+        try:
+            get_r = getattr(fig.canvas, 'get_renderer', None)
+            renderer = get_r() if callable(get_r) else getattr(fig.canvas, 'renderer', None)
+        except Exception:
+            renderer = None
+        if renderer is None:
+            return
+        # Costanti di layout per icone e margini
+        right_pad = 0.04
+        left_pad = 0.04
+        # Gap minimi per pulsante (riduciamo quello di Play per avvicinare il testo all'icona)
+        min_gap_prev = 0.02
+        min_gap_play = 0.010
+        min_gap_next = 0.02
+        prev_icon_right_x = 0.50
+        play_icon_right_x = 0.58
+        next_icon_left_x = 0.60
+        # Ripristina testo pieno e allineamenti/ancore iniziali
+        labels = [(btn_prev.label, 'prev'), (btn_play.label, 'play'), (btn_next.label, 'next')]
+        for lab, kind in labels:
+            cur_txt = lab.get_text()
+            full_txt = getattr(lab, '_full_text', None)
+            if full_txt is None or (cur_txt != full_txt and not cur_txt.endswith('…')):
+                setattr(lab, '_full_text', cur_txt)
+                full_txt = cur_txt
+            lab.set_text(full_txt or cur_txt)
+            if kind in ('prev', 'play'):
+                lab.set_horizontalalignment('right')
+                lab.set_verticalalignment('center')
+                lab.set_position((1.0 - right_pad, 0.50))
+            else:  # next
+                lab.set_horizontalalignment('left')
+                lab.set_verticalalignment('center')
+                lab.set_position((left_pad, 0.50))
+        try:
+            fig.canvas.draw()
+        except Exception:
+            pass
+        # Ricerca della massima dimensione font uniforme che entra per tutti
+        max_fs = 12.0
+        min_fs = 7.0
+        step = 0.5
+        def fits_all(fs: float) -> bool:
+            for lab, kind in labels:
+                lab.set_fontsize(fs)
+                try:
+                    fig.canvas.draw()
+                except Exception:
+                    pass
+                ax_bbox = lab.axes.get_window_extent(renderer=renderer)
+                txt_bbox = lab.get_window_extent(renderer=renderer)
+                text_w_axes = txt_bbox.width / max(ax_bbox.width, 1.0)
+                if kind == 'prev':
+                    anchor_x = 1.0 - right_pad
+                    icon_right_x = prev_icon_right_x
+                    avail = max(0.0, anchor_x - (icon_right_x + min_gap_prev))
+                elif kind == 'play':
+                    anchor_x = 1.0 - right_pad
+                    icon_right_x = play_icon_right_x
+                    avail = max(0.0, anchor_x - (icon_right_x + min_gap_play))
+                else:  # next
+                    anchor_x = left_pad
+                    avail = max(0.0, (next_icon_left_x - min_gap_next) - anchor_x)
+                if text_w_axes > avail + 1e-6:
+                    return False
+            return True
+        # Trova il font size più grande che soddisfa tutti
+        chosen = None
+        fs = max_fs
+        while fs >= min_fs:
+            if fits_all(fs):
+                chosen = fs
+                break
+            fs -= step
+        if chosen is None:
+            chosen = min_fs
+        # Applica font uniforme
+        for lab, _ in labels:
+            lab.set_fontsize(chosen)
+        try:
+            fig.canvas.draw()
+        except Exception:
+            pass
+        # Troncamento con ellissi se ancora serve, mantenendo font uniforme
+        for lab, kind in labels:
+            ax_bbox = lab.axes.get_window_extent(renderer=renderer)
+            txt_bbox = lab.get_window_extent(renderer=renderer)
+            text_w_axes = txt_bbox.width / max(ax_bbox.width, 1.0)
+            if kind == 'prev':
+                anchor_x = 1.0 - right_pad
+                icon_right_x = prev_icon_right_x
+                avail = max(0.0, anchor_x - (icon_right_x + min_gap_prev))
+            elif kind == 'play':
+                anchor_x = 1.0 - right_pad
+                icon_right_x = play_icon_right_x
+                avail = max(0.0, anchor_x - (icon_right_x + min_gap_play))
+            else:
+                anchor_x = left_pad
+                avail = max(0.0, (next_icon_left_x - min_gap_next) - anchor_x)
+            if text_w_axes > avail + 1e-6:
+                base = getattr(lab, '_full_text', lab.get_text()) or ''
+                if not base:
+                    continue
+                trunc = base
+                # Tronca finché non rientra o restano 3 char
+                while text_w_axes > avail + 1e-6 and len(trunc) > 3:
+                    trunc = trunc[:-1]
+                    lab.set_text(trunc.rstrip() + '…')
+                    try:
+                        fig.canvas.draw()
+                    except Exception:
+                        break
+                    txt_bbox = lab.get_window_extent(renderer=renderer)
+                    text_w_axes = txt_bbox.width / max(ax_bbox.width, 1.0)
+        # Fine layout uniforme
+
+    # Disegna icone iniziali
+    _draw_prev_icon(ax_prev)
+    _set_play_icon(ax_play, playing=False)
+    _draw_next_icon(ax_next)
+
+    # Layout iniziale uniforme
+    try:
+        _layout_all_button_labels_uniform()
+    except Exception:
+        pass
+
+    # Rilayout su resize della finestra
+    try:
+        def _on_resize(event):
+            _layout_all_button_labels_uniform()
+        fig.canvas.mpl_connect('resize_event', _on_resize)
+    except Exception:
+        pass
 
     def on_prev(event):
         # Cambia traiettoria indietro, resetta player
@@ -530,8 +730,16 @@ def show_trajectories_carousel(
             timer.stop()
         except Exception:
             pass
-        btn_play.label.set_text('Play ⯈')
+        _set_play_icon(ax_play, playing=False)
+        try:
+            btn_play.label.set_text('Play')
+        except Exception:
+            pass
         draw_current()
+        try:
+            _layout_all_button_labels_uniform()
+        except Exception:
+            pass
 
     def on_next(event):
         # Cambia traiettoria avanti, resetta player
@@ -541,8 +749,16 @@ def show_trajectories_carousel(
             timer.stop()
         except Exception:
             pass
-        btn_play.label.set_text('Play ⯈')
+        _set_play_icon(ax_play, playing=False)
+        try:
+            btn_play.label.set_text('Play')
+        except Exception:
+            pass
         draw_current()
+        try:
+            _layout_all_button_labels_uniform()
+        except Exception:
+            pass
 
     def on_play(event):
         # Toggle Play/Pausa
@@ -553,14 +769,26 @@ def show_trajectories_carousel(
                 timer.start()
             except Exception:
                 pass
-            btn_play.label.set_text('Pausa ⏸')
+            _set_play_icon(ax_play, playing=True)
+            try:
+                btn_play.label.set_text('Pausa')
+            except Exception:
+                pass
         else:
             state["playing"] = False
             try:
                 timer.stop()
             except Exception:
                 pass
-            btn_play.label.set_text('Play ⯈')
+            _set_play_icon(ax_play, playing=False)
+            try:
+                btn_play.label.set_text('Play')
+            except Exception:
+                pass
+        try:
+            _layout_all_button_labels_uniform()
+        except Exception:
+            pass
 
     btn_prev.on_clicked(on_prev)
     btn_play.on_clicked(on_play)

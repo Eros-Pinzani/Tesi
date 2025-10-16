@@ -50,7 +50,7 @@ def main():
     sim.reset_robot(x=0.0, y=0.0, theta=0.0)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
     commands_list.append(sim.commands)
-    titles.append("Circolare (v costante, 1 giro)")
+    titles.append("Circolare (v costante)")
 
     # 4) Circolare (raggio costante, v variabile) — esattamente 1 giro, allineato a dt
     v_min, v_max = v_min_ref, v_max_ref
@@ -62,7 +62,7 @@ def main():
     sim.reset_robot(x=0.0, y=0.0, theta=0.0)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
     commands_list.append(sim.commands)
-    titles.append("Circolare (v variabile, 1 giro)")
+    titles.append("Circolare (v variabile)")
 
     # 5) Otto semplice (due semiarchi opposti) — un “giro completo” = due lobi chiusi ⇒ 4πR/v
     v = v_ref
@@ -75,7 +75,7 @@ def main():
     sim.reset_robot(x=0.0, y=0.0, theta=0.0)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
     commands_list.append(sim.commands)
-    titles.append("Traiettoria a 8 (1 giro)")
+    titles.append("Traiettoria a 8")
 
     # 6) Random walk — durata media
     T_rw = 40.0
