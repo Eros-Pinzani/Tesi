@@ -193,25 +193,31 @@ def _plot_static_trajectory_on_axes(
     title: Optional[str] = None,
     include_title: bool = True,
     include_axis_labels: bool = True,
+    *,
+    draw_glyphs: bool = True,
 ):
+    """Disegna linea della traiettoria e (opzionalmente) i robot statici lungo il percorso.
+    - draw_glyphs: se False non disegna i robot statici (utile per viewer interattivo con rivelazione progressiva).
+    Ritorna (r_robot, d_arrow)."""
     n = len(hist)
     step = max(1, int(step))
     # Linea della traiettoria (nera) come sfondo
     ax.plot(hist[:, 0], hist[:, 1], '-', linewidth=1.5, color='k', zorder=0)
     # Scala robot e freccia
     r_robot, d_arrow = _robot_scale_from_history(hist)
-    # Pose sparse
-    for i in range(0, n, step):
-        if i == 0:
-            body_col, arr_col, ctr_col = 'green', 'orange', 'green'
-        elif i == n - 1:
-            body_col, arr_col, ctr_col = 'red', 'orange', 'red'
-        else:
-            body_col, arr_col, ctr_col = 'tab:blue', 'orange', 'orange'
-        draw_robot(ax, hist[i], robot_radius=r_robot, dir_len=d_arrow, color=body_col, arrow_color=arr_col, center_color=ctr_col)
-    # Assicura l'ultima posa
-    if n > 0 and ((n - 1) % step != 0 or n == 1):
-        draw_robot(ax, hist[-1], robot_radius=r_robot, dir_len=d_arrow, color='red', arrow_color='orange', center_color='red')
+    # Pose sparse (solo se richiesto)
+    if draw_glyphs:
+        for i in range(0, n, step):
+            if i == 0:
+                body_col, arr_col, ctr_col = 'green', 'orange', 'green'
+            elif i == n - 1:
+                body_col, arr_col, ctr_col = 'red', 'orange', 'red'
+            else:
+                body_col, arr_col, ctr_col = 'tab:blue', 'orange', 'orange'
+            draw_robot(ax, hist[i], robot_radius=r_robot, dir_len=d_arrow, color=body_col, arrow_color=arr_col, center_color=ctr_col)
+        # Assicura l'ultima posa
+        if n > 0 and ((n - 1) % step != 0 or n == 1):
+            draw_robot(ax, hist[-1], robot_radius=r_robot, dir_len=d_arrow, color='red', arrow_color='orange', center_color='red')
 
     # Limiti che includono frecce/cerchi
     x0, x1, y0, y1 = _compute_axes_limits_with_glyphs(hist, step, r_robot, d_arrow)
@@ -286,7 +292,7 @@ def _build_info_text(
         x_k = y_k = th_k = 0.0
 
     info_text = (
-        f"k={k_pose}  t={t_k:.2f} s\n"
+        f"t={t_k:.2f} s\n"
         f"v={v_k:.2f} m/s,  ω={w_k:.2f} rad/s\n"
         f"x={x_k:.2f} m,  y={y_k:.2f} m,  ϑ={th_k:.2f} rad"
     )
@@ -379,7 +385,7 @@ def show_trajectories_carousel(
     plt.subplots_adjust(bottom=0.18)  # Lascia spazio ai pulsanti
 
     # Stato interno dell'indice corrente + player
-    state = {"idx": 0, "show_info": bool(show_info), "playing": False, "frame": 0}
+    state = {"idx": 0, "show_info": bool(show_info), "playing": False, "frame": 0, "static_glyphs": []}
     info_artist: Optional[Text] = None  # handle del box info (fig.text)
     moving_artists = []  # lista di patch dell'istanza mobile da rimuovere/aggiornare
 
@@ -467,11 +473,51 @@ def show_trajectories_carousel(
         if after > before:
             moving_artists = ax.patches[before:after]
 
+    def _reveal_static_up_to(k: int):
+        """Rende visibili i robot statici fino all'indice k (incluso), nascondendo gli altri."""
+        static_list = state.get("static_glyphs", [])
+        if not static_list:
+            return
+        for idx_i, patches in static_list:
+            want_visible = idx_i <= int(k)
+            for p in patches:
+                with suppress(Exception):
+                    p.set_visible(want_visible)
+
+    def _build_static_glyphs(hist: np.ndarray, step: int):
+        """Pre-disegna i robot statici lungo la traiettoria ma li tiene nascosti.
+        Saranno resi visibili progressivamente durante la riproduzione."""
+        state["static_glyphs"] = []
+        n = len(hist)
+        if n <= 0:
+            return
+        step = max(1, int(step))
+        # Indici dove mostrare un robot statico (come nelle immagini salvate)
+        idxs = list(range(0, n, step))
+        if (n - 1) not in idxs:
+            idxs.append(n - 1)
+        r_robot, d_arrow = _robot_scale_from_history(hist)
+        for i in idxs:
+            if i == 0:
+                body_col, arr_col, ctr_col = 'green', 'orange', 'green'
+            elif i == n - 1:
+                body_col, arr_col, ctr_col = 'red', 'orange', 'red'
+            else:
+                body_col, arr_col, ctr_col = 'tab:blue', 'orange', 'orange'
+            before = len(ax.patches)
+            draw_robot(ax, hist[i], robot_radius=r_robot, dir_len=d_arrow, color=body_col, arrow_color=arr_col, center_color=ctr_col)
+            after = len(ax.patches)
+            patches = ax.patches[before:after] if after > before else []
+            # Nascondi subito: verranno resi visibili quando il mobile ci passa sopra
+            for p in patches:
+                with suppress(Exception):
+                    p.set_visible(False)
+            state["static_glyphs"].append((i, patches))
+
     # Box legenda statico (alto-sinistra, fuori dal grafico)
     if show_legend:
         legend_text = (
             "Legenda:\n"
-            "k: indice campione\n"
             "t: tempo [s]\n"
             "v: velocità lineare [m/s]\n"
             "ω: velocità angolare [rad/s]\n"
@@ -503,8 +549,11 @@ def show_trajectories_carousel(
         n = len(hist)
         step = _resolve_show_every(state["idx"])  # passo specifico per traiettoria
 
-        # Disegno statico tramite helper centralizzato
-        _plot_static_trajectory_on_axes(ax, hist, step=step, title=title, include_title=True, include_axis_labels=True)
+        # Disegno statico tramite helper centralizzato, ma SENZA robot statici sul viewer
+        _plot_static_trajectory_on_axes(ax, hist, step=step, title=title, include_title=True, include_axis_labels=True, draw_glyphs=False)
+
+        # Pre-disegna i robot statici nascosti per rivelazione progressiva
+        _build_static_glyphs(hist, step)
 
         # Pannello informazioni opzionale (controllato dal parametro)
         if state["show_info"]:
@@ -530,12 +579,17 @@ def show_trajectories_carousel(
         # Inizializza frame corrente e robot mobile all'inizio
         state["frame"] = 0
         _draw_moving_at(0)
+        _reveal_static_up_to(0)
         _set_timer_interval_for_current()
         fig.canvas.draw_idle()  # Aggiorna il rendering
         if save_each:
+            # Per il salvataggio, genera una figura a parte con TUTTI i robot statici visibili
+            fig_save, ax_save = plt.subplots(figsize=(7, 7))
+            _plot_static_trajectory_on_axes(ax_save, hist, step=step, title=title, include_title=True, include_axis_labels=True, draw_glyphs=True)
             out_path = _default_save_path(title)
-            fig.savefig(out_path, dpi=120, bbox_inches='tight')
+            fig_save.savefig(out_path, dpi=120, bbox_inches='tight')
             print(f"Figura salvata in: {out_path}")
+            plt.close(fig_save)
 
     # Callback timer: avanza un frame secondo dt
     def _on_timer():
@@ -556,6 +610,7 @@ def show_trajectories_carousel(
             return
         state["frame"] = k
         _draw_moving_at(k)
+        _reveal_static_up_to(k)
         # Aggiorna pannello info in tempo reale se attivo
         if state["show_info"]:
             with suppress(Exception):
@@ -783,7 +838,7 @@ def save_trajectories_images(histories, titles, show_orient_every=20):
         fig, ax = plt.subplots(figsize=(7, 7))
         step = _resolve_show_every(i)
         # Disegno statico tramite helper centralizzato (senza etichette/titolo per immagini pulite)
-        _plot_static_trajectory_on_axes(ax, hist, step=step, title=None, include_title=False, include_axis_labels=False)
+        _plot_static_trajectory_on_axes(ax, hist, step=step, title=None, include_title=False, include_axis_labels=False, draw_glyphs=True)
         out_path = _default_save_path(title_str)  # Percorso nella cartella img
         fig.savefig(out_path, dpi=120, bbox_inches='tight')  # Salvataggio su file
         print(f"Figura salvata in: {out_path}")
