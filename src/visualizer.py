@@ -3,7 +3,7 @@
 Funzionalità principali:
 - Disegno della traiettoria con simboli del robot a intervalli regolari.
 - Salvataggio immagini statiche in PNG nella cartella img/ con nomi basati sul titolo e timestamp.
-- Viewer interattivo “carousel” con pulsanti (precedente/play/successivo), scorciatoie da tastiera e
+- Viewer interattivo “carousel” con pulsanti (precedente/play/successivo) e
   pannello informazioni opzionale. Nel viewer i simboli del robot lungo la traiettoria compaiono
   progressivamente quando il robot mobile raggiunge quelle posizioni; le immagini salvate invece
   li mostrano tutti, come in precedenza.
@@ -61,8 +61,8 @@ def _wheel_params(robot_radius: float):
 
 
 def draw_robot(ax, state, robot_radius=0.1, color='tab:blue', dir_len=None, arrow_color='orange', center_color='orange',
-               draw_wheels: bool = True, wheel_facecolor='white', wheel_edgecolor='k') -> List[Artist]:
-    """Disegna il robot come rettangolo orientato con freccia e ruote opzionali.
+               wheel_facecolor='white', wheel_edgecolor='k') -> List[Artist]:
+    """Disegna il robot come rettangolo orientato con freccia e ruote.
 
     Parametri principali:
     - ax: axes Matplotlib su cui disegnare
@@ -85,22 +85,21 @@ def draw_robot(ax, state, robot_radius=0.1, color='tab:blue', dir_len=None, arro
     ax.add_patch(rect)
     artists.append(rect)
 
-    # Rotelle: quattro cerchi vicino alle estremità dei lati lunghi
-    if draw_wheels:
-        w_r, w_off = _wheel_params(robot_radius)
-        wheel_long_frac = 0.8  # posizione lungo il lato lungo (80% della semi-lunghezza)
-        x_off = wheel_long_frac * (length / 2.0)
-        corners = [
-            ( +x_off, +width/2.0 + w_off),  # lato superiore, estremità destra
-            ( -x_off, +width/2.0 + w_off),  # lato superiore, estremità sinistra
-            ( +x_off, -width/2.0 - w_off),  # lato inferiore, estremità destra
-            ( -x_off, -width/2.0 - w_off),  # lato inferiore, estremità sinistra
-        ]
-        for cx, cy in corners:
-            wheel = Circle((cx, cy), w_r, facecolor=wheel_facecolor, edgecolor=wheel_edgecolor, linewidth=1.0, zorder=4)
-            wheel.set_transform(trans)
-            ax.add_patch(wheel)
-            artists.append(wheel)
+    # Rotelle: quattro cerchi vicino alle estremità dei lati lunghi (sempre disegnate)
+    w_r, w_off = _wheel_params(robot_radius)
+    wheel_long_frac = 0.8  # posizione lungo il lato lungo (80% della semi-lunghezza)
+    x_off = wheel_long_frac * (length / 2.0)
+    corners = [
+        ( +x_off, +width/2.0 + w_off),  # lato superiore, estremità destra
+        ( -x_off, +width/2.0 + w_off),  # lato superiore, estremità sinistra
+        ( +x_off, -width/2.0 - w_off),  # lato inferiore, estremità destra
+        ( -x_off, -width/2.0 - w_off),  # lato inferiore, estremità sinistra
+    ]
+    for cx, cy in corners:
+        wheel = Circle((cx, cy), w_r, facecolor=wheel_facecolor, edgecolor=wheel_edgecolor, linewidth=1.0, zorder=4)
+        wheel.set_transform(trans)
+        ax.add_patch(wheel)
+        artists.append(wheel)
 
     # Pallino centrale (rende evidente il centro del corpo)
     center_r = 0.25 * robot_radius
@@ -608,18 +607,6 @@ def show_trajectories_carousel(
     btn_play.on_clicked(on_play)
     btn_next.on_clicked(lambda _event: _navigate(+1))
 
-    def on_key(event):
-        """Scorciatoie: frecce sinistra/destra per navigare, spazio per play/pausa, q/esc per chiudere."""
-        key = getattr(event, 'key', None)
-        if key in ('left', 'a'):
-            _navigate(-1)
-        elif key in ('right', 'd'):
-            _navigate(+1)
-        elif key in (' ', 'space'):
-            on_play(event)
-        elif key in ('q', 'escape'):
-            plt.close(fig)
-    fig.canvas.mpl_connect('key_press_event', on_key)
 
     # Disegna subito la prima traiettoria
     draw_current()
