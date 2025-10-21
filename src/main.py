@@ -3,6 +3,45 @@ from trajectory_generator import TrajectoryGenerator
 from simulator import Simulator
 import visualizer
 import math  # Per calcolo di 2πR/v
+from environment import Environment  # per visualizzare bounds e ostacoli
+import numpy as np  # per calcolare bounds dalle traiettorie
+from typing import List
+
+
+def build_simulator() -> Simulator:
+    """Crea un simulatore con un robot di default."""
+    return Simulator(robot=Robot())
+
+
+def reset_robot_default(sim: Simulator, x: float = 0.0, y: float = 0.0, theta: float = 0.0) -> None:
+    """Reimposta il robot del simulatore alla posa iniziale di default (x,y,theta)."""
+    sim.reset_robot(x=x, y=y, theta=theta)
+
+
+def setup_environment(histories: List[np.ndarray]) -> Environment:
+    """Crea e configura l'Environment a partire dall'estensione delle traiettorie.
+
+    - Calcola bounds con un padding proporzionale all'estensione complessiva.
+    - Aggiunge alcuni ostacoli di prova ben visibili vicino alle traiettorie.
+    """
+    env = Environment()
+    try:
+        all_xy = np.vstack([h[:, :2] for h in histories])
+        x_min, y_min = np.min(all_xy[:, 0]), np.min(all_xy[:, 1])
+        x_max, y_max = np.max(all_xy[:, 0]), np.max(all_xy[:, 1])
+        span_x = float(x_max) - float(x_min)
+        span_y = float(y_max) - float(y_min)
+        pad = 0.15 * max(span_x, span_y, 1.0)
+        env.set_bounds(float(x_min - pad), float(y_min - pad), float(x_max + pad), float(y_max + pad))
+    except Exception:
+        # Fallback in caso di problemi: bounds standard centrati in (0,0)
+        env.set_bounds(-5.0, -5.0, 5.0, 5.0)
+
+    # Ostacoli di prova (vicini alle traiettorie per essere ben visibili)
+    env.add_rectangle(-0.25, -0.25, 0.25, 0.25)   # pilastro centrale
+    env.add_rectangle(2.0, -0.5, 3.0, 0.5)        # rettangolo lungo la retta
+    env.add_rectangle(6.0, 0.8, 7.0, 1.8)         # rettangolo sopra la retta
+    return env
 
 
 def main():
@@ -16,7 +55,7 @@ def main():
     omega_std_ref = 0.5
 
     tg = TrajectoryGenerator()                 # Generatore delle traiettorie
-    sim = Simulator(robot=Robot())             # Simulatore con robot iniziale
+    sim = build_simulator()                    # Simulatore con robot iniziale di default
 
     histories = []      # Lista delle storie [x,y,theta] per ogni traiettoria
     titles = []         # Titoli da mostrare nel carosello
@@ -26,7 +65,7 @@ def main():
     T_straight = 20.0
     v = v_ref
     vs, omegas = tg.straight(v=v, T=T_straight, dt=dt)
-    sim.reset_robot(x=0.0, y=0.0, theta=0.0)
+    reset_robot_default(sim)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
     commands_list.append(sim.commands)
     titles.append("Rettilinea (v costante)")
@@ -35,7 +74,7 @@ def main():
     T_straight_var = 20.0
     v_min, v_max = v_min_ref, v_max_ref
     vs, omegas = tg.straight_var_speed(v_min=v_min, v_max=v_max, T=T_straight_var, dt=dt, phase=0.0)
-    sim.reset_robot(x=0.0, y=0.0, theta=0.0)
+    reset_robot_default(sim)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
     commands_list.append(sim.commands)
     titles.append("Rettilinea (v variabile)")
@@ -47,7 +86,7 @@ def main():
     n_steps = max(1, int(round(period / dt)))
     T_circle = n_steps * dt
     vs, omegas = tg.circle(v=v, radius=R, T=T_circle, dt=dt)
-    sim.reset_robot(x=0.0, y=0.0, theta=0.0)
+    reset_robot_default(sim)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
     commands_list.append(sim.commands)
     titles.append("Circolare (v costante)")
@@ -59,7 +98,7 @@ def main():
     n_steps_var = max(1, int(round(period_var / dt)))
     T_circle_var = n_steps_var * dt
     vs, omegas = tg.circle_var_speed(v_min=v_min, v_max=v_max, radius=R, T=T_circle_var, dt=dt, phase=0.0)
-    sim.reset_robot(x=0.0, y=0.0, theta=0.0)
+    reset_robot_default(sim)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
     commands_list.append(sim.commands)
     titles.append("Circolare (v variabile)")
@@ -72,7 +111,7 @@ def main():
         n_steps_eight += 1  # due metà con lo stesso numero di step discreti
     T_eight = (n_steps_eight - 1e-9) * dt  # epsilon per stabilità su ceil
     vs, omegas = tg.eight(v=v, radius=R, T=T_eight, dt=dt)
-    sim.reset_robot(x=0.0, y=0.0, theta=0.0)
+    reset_robot_default(sim)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
     commands_list.append(sim.commands)
     titles.append("Traiettoria a 8")
@@ -82,17 +121,20 @@ def main():
     v_mean = v_ref
     omega_std = omega_std_ref
     vs, omegas = tg.random_walk(v_mean=v_mean, omega_std=omega_std, T=T_rw, dt=dt, seed=42)
-    sim.reset_robot(x=0.0, y=0.0, theta=0.0)
+    reset_robot_default(sim)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
     commands_list.append(sim.commands)
     titles.append("Random walk")
+
+    # Costruisci l'ambiente separatamente
+    env = setup_environment(histories)
 
     # Passi per disegnare la posa del robot per ciascuna traiettoria (in ordine):
     # [Retta costante, Retta variabile, Cerchio costante, Cerchio variabile, Otto, Random walk]
     show_steps = [80, 80, 40, 40, 120, 120]  # più rado sull'otto e sul random walk
 
     # Salva TUTTE le immagini in batch nella cartella img (senza aprire finestre)
-    visualizer.save_trajectories_images(histories, titles, show_orient_every=show_steps)
+    visualizer.save_trajectories_images(histories, titles, show_orient_every=show_steps, environment=env)
 
     # Mostra tutte in un'unica finestra con pulsanti Precedente/Successivo e pannello info
     visualizer.show_trajectories_carousel(
@@ -103,8 +145,10 @@ def main():
         commands_list=commands_list,
         dts=dt,
         show_info=True,
+        environment=env,
     )
 
 
 if __name__ == "__main__":
     main()
+

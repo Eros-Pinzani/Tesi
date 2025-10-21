@@ -27,10 +27,11 @@ import re  # Normalizzazione del titolo in un nome file sicuro (slugify minimo)
 from datetime import datetime  # Timestamp per nomi univoci ed evitare sovrascritture
 from matplotlib.widgets import Button  # Pulsanti UI per navigazione e Play/Pausa
 from matplotlib import transforms as mtransforms  # Trasformazioni affini: rotazione/traslazione delle patch
-from typing import Optional, List  # Annotazioni di tipo per migliori suggerimenti e linting
+from typing import Optional, List, Sequence, Union  # Annotazioni di tipo per migliori suggerimenti e linting
 from matplotlib.text import Text  # Artista di testo (pannello info, legenda)
 from contextlib import suppress  # Ignora eccezioni non critiche in operazioni best-effort
 from matplotlib.artist import Artist  # Tipo base di tutti gli elementi disegnabili (patch, arrow, ecc.)
+from environment import Environment  # Per disegnare confini e ostacoli
 
 
 # Helper per rimuovere in sicurezza un artista matplotlib (gestisce None ed eccezioni)
@@ -157,13 +158,12 @@ def _robot_scale_from_history(history):
     return robot_radius, dir_len
 
 
-def _compute_axes_limits_with_glyphs(history, step, r_robot, d_arrow):
-    """Calcola i limiti degli assi includendo corpo, ruote e punte freccia.
+def _compute_axes_limits_with_glyphs(history, step, r_robot, d_arrow, env: Optional[Environment] = None, *, fit_to: str = 'trajectory'):
+    """Calcola i limiti degli assi includendo corpo, ruote, punte freccia.
 
-    Considera:
-    - estensione della traiettoria (min/max x,y)
-    - raggio equivalente del corpo (mezza diagonale del rettangolo) + offset ruote
-    - punte delle frecce disegnate a intervalli (e sempre l'ultima)
+    fit_to:
+    - 'trajectory' (default): adatta i limiti alla traiettoria (più stretto, niente dezoom).
+    - 'environment': estende i limiti per includere anche i bounds dell'ambiente.
     """
     xs = history[:, 0]
     ys = history[:, 1]
@@ -200,6 +200,19 @@ def _compute_axes_limits_with_glyphs(history, step, r_robot, d_arrow):
         y_min = min(y_min, tip_y)
         y_max = max(y_max, tip_y)
 
+    # Opzionale: includi i bounds dell'ambiente solo se richiesto
+    if fit_to == 'environment' and env is not None and getattr(env, 'bounds', None) is not None:
+        try:
+            bx, by = env.bounds.exterior.xy  # type: ignore[attr-defined]
+            bx_min, bx_max = float(np.min(bx)), float(np.max(bx))
+            by_min, by_max = float(np.min(by)), float(np.max(by))
+            x_min = min(x_min, bx_min)
+            x_max = max(x_max, bx_max)
+            y_min = min(y_min, by_min)
+            y_max = max(y_max, by_max)
+        except Exception:
+            pass
+
     # Piccolo margine finale per aria attorno al disegno
     pad = 0.02 * max(x_max - x_min, y_max - y_min, 1.0)
     return x_min - pad, x_max + pad, y_min - pad, y_max + pad
@@ -218,17 +231,25 @@ def _plot_static_trajectory_on_axes(
     include_axis_labels: bool = True,
     *,
     draw_glyphs: bool = True,
+    environment: Optional[Environment] = None,
+    fit_to: str = 'trajectory',
 ):
-    """Disegna la linea della traiettoria e (opzionalmente) i robot statici sparsi.
+    """Disegna lo sfondo dell'ambiente (opzionale), la linea della traiettoria e (opzionalmente) i robot statici sparsi.
 
     - draw_glyphs=False è usato nel viewer interattivo per non mostrare i robot statici
       finché non vengono “rivelati” durante la riproduzione.
+    - fit_to controlla se i limiti assi si adattano alla sola traiettoria (default) o includono i bounds dell'ambiente.
     Ritorna (r_robot, d_arrow).
     """
     n = len(hist)
     step = max(1, int(step))
-    # Traccia la traiettoria (linea nera)
-    ax.plot(hist[:, 0], hist[:, 1], '-', linewidth=1.5, color='k', zorder=0)
+
+    # Disegna l'ambiente in background, se fornito (bounds e ostacoli)
+    if environment is not None:
+        environment.plot(ax=ax)
+
+    # Traccia la traiettoria (linea nera) sopra lo sfondo
+    ax.plot(hist[:, 0], hist[:, 1], '-', linewidth=1.5, color='k', zorder=2)
     # Scala robot/freccia coerente con l’estensione
     r_robot, d_arrow = _robot_scale_from_history(hist)
 
@@ -246,8 +267,8 @@ def _plot_static_trajectory_on_axes(
         if n > 0 and ((n - 1) % step != 0 or n == 1):
             draw_robot(ax, hist[-1], robot_radius=r_robot, dir_len=d_arrow, color='red', arrow_color='orange', center_color='red')
 
-    # Limiti assi che includono anche le punte delle frecce
-    x0, x1, y0, y1 = _compute_axes_limits_with_glyphs(hist, step, r_robot, d_arrow)
+    # Limiti assi calcolati in base alla scelta di fit
+    x0, x1, y0, y1 = _compute_axes_limits_with_glyphs(hist, step, r_robot, d_arrow, env=environment, fit_to=fit_to)
     ax.set_xlim(x0, x1)
     ax.set_ylim(y0, y1)
 
@@ -336,18 +357,20 @@ def _update_info_artist(fig, info_artist: Optional[Text], info_text: str) -> Tex
     )
 
 
-def plot_trajectory(history, show_orient_every=20, title="Traiettoria del robot", save_path=None):
+def plot_trajectory(history, show_orient_every=20, title="Traiettoria del robot", save_path=None, *, environment: Optional[Environment] = None, fit_to: str = 'trajectory'):
     """Plotta una singola traiettoria e (opzionalmente) salva l'immagine PNG.
 
     - show_orient_every controlla la distanza (in campioni) tra simboli del robot
     - save_path, se assente, usa un percorso di default in img/
+    - environment: se fornito, disegna bounds e ostacoli come sfondo
+    - fit_to: 'trajectory' (default) per evitare dezoom, oppure 'environment' per includere tutto l'ambiente
     """
     # Figura quadrata per mantenere rapporto 1:1
     fig, ax = plt.subplots(figsize=(7, 7))
 
     # Disegno statico centralizzato
     step = max(1, int(show_orient_every))
-    _plot_static_trajectory_on_axes(ax, history, step=step, title=title, include_title=True, include_axis_labels=True)
+    _plot_static_trajectory_on_axes(ax, history, step=step, title=title, include_title=True, include_axis_labels=True, environment=environment, fit_to=fit_to)
 
     # Salvataggio opzionale
     out_path = Path(save_path) if save_path else _default_save_path(title)
@@ -366,6 +389,9 @@ def show_trajectories_carousel(
     dts=None,
     show_info=False,
     show_legend=True,
+    *,
+    environment: Optional[Union[Environment, Sequence[Optional[Environment]]]] = None,
+    fit_to: str = 'trajectory',
 ):
     """Viewer interattivo per più traiettorie con pulsanti e Play/Pausa.
 
@@ -373,6 +399,8 @@ def show_trajectories_carousel(
     - show_orient_every può essere unico o una lista per traiettoria
     - dts può essere unico o lista; controlla la velocità del player
     - se save_each=True, all'apertura di ciascuna traiettoria viene salvata un'immagine separata
+    - environment: può essere None, una singola istanza da usare per tutte, oppure una lista per-traiettoria
+    - fit_to: 'trajectory' (default) per avere inquadratura stretta sulla traiettoria, oppure 'environment'
     """
     assert len(histories) == len(titles) and len(histories) > 0, "Liste vuote o di diversa lunghezza"
     if isinstance(show_orient_every, (list, tuple, np.ndarray)):
@@ -394,6 +422,15 @@ def show_trajectories_carousel(
         if isinstance(show_orient_every, (list, tuple, np.ndarray)):
             return max(1, int(show_orient_every[idx]))
         return max(1, int(show_orient_every))
+
+    def _resolve_env(idx: int) -> Optional[Environment]:
+        """Ritorna l'Environment per la traiettoria idx (singolo o per-traiettoria)."""
+        if environment is None:
+            return None
+        if isinstance(environment, (list, tuple)):
+            assert len(environment) == len(histories), "environment (lista) deve avere stessa lunghezza di histories"
+            return environment[idx]
+        return environment
 
     # Figura principale (spazio extra sotto per i pulsanti)
     fig, ax = plt.subplots(figsize=(7, 7))
@@ -500,9 +537,10 @@ def show_trajectories_carousel(
         title = titles[state["idx"]]
         n = len(hist)
         step = _resolve_show_every(state["idx"])
+        env_cur = _resolve_env(state["idx"])  # environment per questa traiettoria (se fornito)
 
         # Disegna la traiettoria senza i robot statici (saranno rivelati in play)
-        _plot_static_trajectory_on_axes(ax, hist, step=step, title=title, include_title=True, include_axis_labels=True, draw_glyphs=False)
+        _plot_static_trajectory_on_axes(ax, hist, step=step, title=title, include_title=True, include_axis_labels=True, draw_glyphs=False, environment=env_cur, fit_to=fit_to)
 
         # Reset rivelazioni statiche
         state["revealed"] = set()
@@ -529,7 +567,7 @@ def show_trajectories_carousel(
         # Salvataggio opzionale di una figura separata con TUTTI i robot statici
         if save_each:
             fig_save, ax_save = plt.subplots(figsize=(7, 7))
-            _plot_static_trajectory_on_axes(ax_save, hist, step=step, title=title, include_title=True, include_axis_labels=True, draw_glyphs=True)
+            _plot_static_trajectory_on_axes(ax_save, hist, step=step, title=title, include_title=True, include_axis_labels=True, draw_glyphs=True, environment=env_cur, fit_to=fit_to)
             out_path = _default_save_path(title)
             fig_save.savefig(out_path, dpi=120, bbox_inches='tight')
             print(f"Figura salvata in: {out_path}")
@@ -613,10 +651,12 @@ def show_trajectories_carousel(
     plt.show()
 
 
-def save_trajectories_images(histories, titles, show_orient_every=20):
+def save_trajectories_images(histories, titles, show_orient_every=20, *, environment: Optional[Union[Environment, Sequence[Optional[Environment]]]] = None, fit_to: str = 'trajectory'):
     """Salva PNG per ciascuna traiettoria, con simboli del robot completi.
 
     - show_orient_every può essere unico o lista (per-traiettoria)
+    - environment: può essere None, una singola istanza da usare per tutte, oppure una lista per-traiettoria
+    - fit_to: 'trajectory' (default) per inquadratura stretta, oppure 'environment'
     - Le figure non vengono mostrate ma solo salvate e chiuse
     """
     assert len(histories) == len(titles) and len(histories) > 0, "Liste vuote o di diversa lunghezza"
@@ -629,12 +669,21 @@ def save_trajectories_images(histories, titles, show_orient_every=20):
             return max(1, int(show_orient_every[idx]))
         return max(1, int(show_orient_every))
 
+    def _resolve_env(idx: int) -> Optional[Environment]:
+        if environment is None:
+            return None
+        if isinstance(environment, (list, tuple)):
+            assert len(environment) == len(histories), "environment (lista) deve avere stessa lunghezza di histories"
+            return environment[idx]
+        return environment
+
     for i, (hist, title_str) in enumerate(zip(histories, titles)):
         # Figura temporanea solo per il salvataggio
         fig, ax = plt.subplots(figsize=(7, 7))
         step = _resolve_show_every(i)
-        # Disegna traiettoria + simboli statici completi (immagine “finale”)
-        _plot_static_trajectory_on_axes(ax, hist, step=step, title=None, include_title=False, include_axis_labels=False, draw_glyphs=True)
+        env_cur = _resolve_env(i)
+        # Disegna traiettoria + simboli statici completi (immagine “finale”) su sfondo (se fornito)
+        _plot_static_trajectory_on_axes(ax, hist, step=step, title=None, include_title=False, include_axis_labels=False, draw_glyphs=True, environment=env_cur, fit_to=fit_to)
         out_path = _default_save_path(title_str)
         fig.savefig(out_path, dpi=120, bbox_inches='tight')
         print(f"Figura salvata in: {out_path}")
