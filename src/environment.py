@@ -26,8 +26,27 @@ class Environment:
         self.bounds = None
 
     def obstacles_union(self):
-        pass
-        #TODO
+        """Unisce tutti gli ostacoli in un'unica geometria per operazioni di intersezione più veloci"""
+        if not self.obstacles:
+            return None
+        return unary_union(self.obstacles)
+
+    def first_intersection_with_line(self, line: LineString):
+        """Restituisce il primo punto di intersezione tra una linea e gli ostacoli dell’ambiente come (x,y) tuple, oppure None se non c’è intersezione."""
+        union = self.obstacles_union()
+        if union is None:
+            return None
+        intersection = line.intersection(union)
+        if intersection.is_empty:
+            return None
+        # Possibili tipi di intersezione: Point, MultiPoint, LineString, GeometryCollection
+        # Estrazione dei punti e scelta del primo punto lungo la linea (il più vicino all'origine del raggio)
+        origin = Point(line.coords[0])
+
+        # Funzione ausiliaria per estrarre punti da diverse geometrie
+        def _extract_points(geom):
+            pass
+            # TODO
 
     def plot(self, ax):
         """Placeholder per il disegno dell’ambiente (attualmente vuoto)."""
