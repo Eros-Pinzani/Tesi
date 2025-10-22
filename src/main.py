@@ -2,10 +2,14 @@ from robot import Robot
 from trajectory_generator import TrajectoryGenerator
 from simulator import Simulator
 import visualizer
+from visualizer import _interp_pose  # import esplicito per uso in bisezione collisione
 import math  # Per calcolo di 2πR/v
 from environment import Environment  # per visualizzare bounds e ostacoli
 import numpy as np  # per calcolare bounds dalle traiettorie
-from typing import List
+from typing import List, Optional, Tuple
+from shapely.geometry import Polygon  # per collisione rettangolare
+from messages import COLLISION_TRAJECTORY
+from environment_presets import setup_environments_per_trajectory
 
 
 def build_simulator() -> Simulator:
@@ -18,30 +22,62 @@ def reset_robot_default(sim: Simulator, x: float = 0.0, y: float = 0.0, theta: f
     sim.reset_robot(x=x, y=y, theta=theta)
 
 
-def setup_environment(histories: List[np.ndarray]) -> Environment:
-    """Crea e configura l'Environment a partire dall'estensione delle traiettorie.
+def _rect_polygon_from_pose(pose, body_length: float, body_width: float) -> Polygon:
+    """Costruisce il poligono rettangolare orientato del robot a partire da (x,y,theta)."""
+    x, y, theta = map(float, pose)
+    L = float(body_length)
+    W = float(body_width)
+    hx, hy = 0.5 * L, 0.5 * W
+    local = np.array([[+hx, +hy], [-hx, +hy], [-hx, -hy], [+hx, -hy]], dtype=float)
+    c, s = float(np.cos(theta)), float(np.sin(theta))
+    R = np.array([[c, -s], [s, c]], dtype=float)
+    world = (local @ R.T) + np.array([x, y], dtype=float)
+    return Polygon(world.tolist())
 
-    - Calcola bounds con un padding proporzionale all'estensione complessiva.
-    - Aggiunge alcuni ostacoli di prova ben visibili vicino alle traiettorie.
-    """
-    env = Environment()
-    try:
-        all_xy = np.vstack([h[:, :2] for h in histories])
-        x_min, y_min = np.min(all_xy[:, 0]), np.min(all_xy[:, 1])
-        x_max, y_max = np.max(all_xy[:, 0]), np.max(all_xy[:, 1])
-        span_x = float(x_max) - float(x_min)
-        span_y = float(y_max) - float(y_min)
-        pad = 0.15 * max(span_x, span_y, 1.0)
-        env.set_bounds(float(x_min - pad), float(y_min - pad), float(x_max + pad), float(y_max + pad))
-    except Exception:
-        # Fallback in caso di problemi: bounds standard centrati in (0,0)
-        env.set_bounds(-5.0, -5.0, 5.0, 5.0)
 
-    # Ostacoli di prova (vicini alle traiettorie per essere ben visibili)
-    env.add_rectangle(-0.25, -0.25, 0.25, 0.25)   # pilastro centrale
-    env.add_rectangle(2.0, -0.5, 3.0, 0.5)        # rettangolo lungo la retta
-    env.add_rectangle(6.0, 0.8, 7.0, 1.8)         # rettangolo sopra la retta
-    return env
+def _first_collision_along_segment(p0, p1, env: Environment, body_length: float, body_width: float, *, iters: int = 18) -> Optional[float]:
+    """Se p1 collide e p0 no, trova via bisezione la frazione alpha in (0,1] del primo contatto.
+    Ritorna None se non c'è collisione nel segmento."""
+    union = env.obstacles_union()
+    if union is None:
+        return None
+    def collides(pose) -> bool:
+        return _rect_polygon_from_pose(pose, body_length, body_width).intersects(union)
+    c0 = collides(p0)
+    c1 = collides(p1)
+    if not c1:
+        return None
+    if c0:
+        return 0.0  # già in collisione all'inizio
+    lo, hi = 0.0, 1.0
+    for _ in range(max(1, int(iters))):
+        mid = 0.5 * (lo + hi)
+        pose_mid = _interp_pose(p0, p1, mid)
+        if collides(pose_mid):
+            hi = mid
+        else:
+            lo = mid
+    return hi
+
+
+def _find_collision_index_with_fraction(history: np.ndarray, env: Environment, body_length: float = 0.40, body_width: float = 0.20) -> Tuple[Optional[int], Optional[float]]:
+    """Ritorna (k, alpha) dove k è il primo indice di frame in collisione e alpha la frazione nel segmento (k-1,k].
+    Se collisione al frame 0, ritorna (0, 0.0). Se nessuna collisione, (None, None)."""
+    union = env.obstacles_union()
+    if union is None:
+        return None, None
+    # Check frame 0
+    if _rect_polygon_from_pose(history[0], body_length, body_width).intersects(union):
+        return 0, 0.0
+    # Cerca il primo frame k che collide
+    for k in range(1, len(history)):
+        if _rect_polygon_from_pose(history[k], body_length, body_width).intersects(union):
+            # Bisezione tra k-1 e k per frazione precisa
+            alpha = _first_collision_along_segment(history[k-1], history[k], env, body_length, body_width)
+            if alpha is None:
+                alpha = 1.0
+            return k, float(alpha)
+    return None, None
 
 
 def main():
@@ -57,11 +93,11 @@ def main():
     tg = TrajectoryGenerator()                 # Generatore delle traiettorie
     sim = build_simulator()                    # Simulatore con robot iniziale di default
 
-    histories = []      # Lista delle storie [x,y,theta] per ogni traiettoria
+    histories = []      # Lista delle storie [x,y,theta] per ogni traiettoria (complete)
     titles = []         # Titoli da mostrare nel carosello
-    commands_list = []  # Lista parallela dei comandi (v, omega) per ogni traiettoria
+    commands_list = []  # Lista parallela dei comandi (v, omega) per ogni traiettoria (complete)
 
-    # 1) Rettilinea (v costante) — più corta per visibilità
+    # 1) Rettilinea (v costante)
     T_straight = 20.0
     v = v_ref
     vs, omegas = tg.straight(v=v, T=T_straight, dt=dt)
@@ -70,7 +106,7 @@ def main():
     commands_list.append(sim.commands)
     titles.append("Rettilinea (v costante)")
 
-    # 2) Rettilinea (v variabile) — stessa durata della retta costante
+    # 2) Rettilinea (v variabile)
     T_straight_var = 20.0
     v_min, v_max = v_min_ref, v_max_ref
     vs, omegas = tg.straight_var_speed(v_min=v_min, v_max=v_max, T=T_straight_var, dt=dt, phase=0.0)
@@ -79,7 +115,7 @@ def main():
     commands_list.append(sim.commands)
     titles.append("Rettilinea (v variabile)")
 
-    # 3) Circolare (raggio costante, v costante) — esattamente 1 giro, allineato a dt
+    # 3) Circolare (v costante) — 1 giro intero
     v = v_ref
     R = radius_ref
     period = (2.0 * math.pi * R) / max(v, 1e-9)
@@ -91,9 +127,9 @@ def main():
     commands_list.append(sim.commands)
     titles.append("Circolare (v costante)")
 
-    # 4) Circolare (raggio costante, v variabile) — esattamente 1 giro, allineato a dt
+    # 4) Circolare (v variabile) — 1 giro intero
     v_min, v_max = v_min_ref, v_max_ref
-    v_mid = 0.5 * (v_min + v_max)               # Valore medio del profilo sinusoidale
+    v_mid = 0.5 * (v_min + v_max)
     period_var = (2.0 * math.pi * R) / max(v_mid, 1e-9)
     n_steps_var = max(1, int(round(period_var / dt)))
     T_circle_var = n_steps_var * dt
@@ -103,20 +139,20 @@ def main():
     commands_list.append(sim.commands)
     titles.append("Circolare (v variabile)")
 
-    # 5) Otto semplice (due semiarchi opposti) — un “giro completo” = due lobi chiusi ⇒ 4πR/v
+    # 5) Traiettoria a 8 — ciclo completo
     v = v_ref
-    period_eight = (4.0 * math.pi * R) / max(v, 1e-9)  # Due lobi completi: primo mezzo tempo = 2πR/v
+    period_eight = (4.0 * math.pi * R) / max(v, 1e-9)
     n_steps_eight = max(2, int(round(period_eight / dt)))
     if n_steps_eight % 2 == 1:
-        n_steps_eight += 1  # due metà con lo stesso numero di step discreti
-    T_eight = (n_steps_eight - 1e-9) * dt  # epsilon per stabilità su ceil
+        n_steps_eight += 1
+    T_eight = (n_steps_eight - 1e-9) * dt
     vs, omegas = tg.eight(v=v, radius=R, T=T_eight, dt=dt)
     reset_robot_default(sim)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
     commands_list.append(sim.commands)
     titles.append("Traiettoria a 8")
 
-    # 6) Random walk — durata media
+    # 6) Random walk
     T_rw = 40.0
     v_mean = v_ref
     omega_std = omega_std_ref
@@ -126,17 +162,26 @@ def main():
     commands_list.append(sim.commands)
     titles.append("Random walk")
 
-    # Costruisci l'ambiente separatamente
-    env = setup_environment(histories)
+    # Costruisci ambienti specifici per ciascuna traiettoria (usando le storie complete)
+    envs = setup_environments_per_trajectory(histories, titles)
 
-    # Passi per disegnare la posa del robot per ciascuna traiettoria (in ordine):
-    # [Retta costante, Retta variabile, Cerchio costante, Cerchio variabile, Otto, Random walk]
-    show_steps = [80, 80, 40, 40, 120, 120]  # più rado sull'otto e sul random walk
+    # Calcola indice e frazione del primo impatto per ogni traiettoria (rettangolo orientato)
+    stop_indices: List[Optional[int]] = []
+    stop_fractions: List[Optional[float]] = []
+    error_messages: List[Optional[str]] = []
+    for hist, env in zip(histories, envs):
+        kcol, frac = _find_collision_index_with_fraction(hist, env, body_length=0.40, body_width=0.20)
+        stop_indices.append(kcol)
+        stop_fractions.append(frac)
+        error_messages.append(COLLISION_TRAJECTORY if kcol is not None else None)
 
-    # Salva TUTTE le immagini in batch nella cartella img (senza aprire finestre)
-    visualizer.save_trajectories_images(histories, titles, show_orient_every=show_steps, environment=env)
+    # Passi per disegnare la posa del robot (in ordine dei casi)
+    show_steps = [80, 80, 40, 40, 120, 120]
 
-    # Mostra tutte in un'unica finestra con pulsanti Precedente/Successivo e pannello info
+    # Salva immagini complete (nessun overlay errore)
+    visualizer.save_trajectories_images(histories, titles, show_orient_every=show_steps, environment=envs, fit_to='environment')
+
+    # Mostra carosello: riproduce e si ferma alla collisione mostrando il messaggio
     visualizer.show_trajectories_carousel(
         histories,
         titles,
@@ -145,10 +190,13 @@ def main():
         commands_list=commands_list,
         dts=dt,
         show_info=True,
-        environment=env,
+        environment=envs,
+        fit_to='environment',
+        error_messages=error_messages,
+        stop_indices=stop_indices,
+        stop_fractions=stop_fractions,
     )
 
 
 if __name__ == "__main__":
     main()
-

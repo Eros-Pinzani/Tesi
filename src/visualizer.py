@@ -357,27 +357,49 @@ def _update_info_artist(fig, info_artist: Optional[Text], info_text: str) -> Tex
     )
 
 
-def plot_trajectory(history, show_orient_every=20, title="Traiettoria del robot", save_path=None, *, environment: Optional[Environment] = None, fit_to: str = 'trajectory'):
+def _update_error_artist(fig, err_artist: Optional[Text], msg: Optional[str]) -> Optional[Text]:
+    """Mostra un messaggio di errore in alto al centro; se msg è None rimuove l'artista."""
+    if err_artist is not None:
+        _safe_remove_artist(err_artist)
+        err_artist = None
+    if msg:
+        err_artist = fig.text(
+            0.5, 0.98, msg,
+            ha='center', va='top', fontsize=11, color='crimson', fontweight='bold',
+        )
+    return err_artist
+
+
+def plot_trajectory(history, show_orient_every=20, title="Traiettoria del robot", save_path=None, *, environment: Optional[Environment] = None, fit_to: str = 'trajectory', error_message: Optional[str] = None):
     """Plotta una singola traiettoria e (opzionalmente) salva l'immagine PNG.
 
-    - show_orient_every controlla la distanza (in campioni) tra simboli del robot
-    - save_path, se assente, usa un percorso di default in img/
-    - environment: se fornito, disegna bounds e ostacoli come sfondo
-    - fit_to: 'trajectory' (default) per evitare dezoom, oppure 'environment' per includere tutto l'ambiente
+    Nota: l'overlay d'errore non viene mostrato nelle immagini statiche; il messaggio appare solo nel viewer al momento della collisione.
     """
-    # Figura quadrata per mantenere rapporto 1:1
     fig, ax = plt.subplots(figsize=(7, 7))
-
-    # Disegno statico centralizzato
     step = max(1, int(show_orient_every))
     _plot_static_trajectory_on_axes(ax, history, step=step, title=title, include_title=True, include_axis_labels=True, environment=environment, fit_to=fit_to)
-
-    # Salvataggio opzionale
     out_path = Path(save_path) if save_path else _default_save_path(title)
     fig.savefig(out_path, dpi=120, bbox_inches='tight')
     print(f"Figura salvata in: {out_path}")
-
     plt.show()
+
+
+def _interp_pose(p0, p1, alpha: float):
+    """Interpolazione lineare di posa (x,y,theta) con wrapping angolare.
+    alpha in [0,1]."""
+    alpha = float(max(0.0, min(1.0, alpha)))
+    x0, y0, t0 = map(float, p0)
+    x1, y1, t1 = map(float, p1)
+    dx = x1 - x0
+    dy = y1 - y0
+    # differenza angolare normalizzata in [-pi, pi)
+    dth = (t1 - t0 + np.pi) % (2 * np.pi) - np.pi
+    x = x0 + alpha * dx
+    y = y0 + alpha * dy
+    th = t0 + alpha * dth
+    # normalizza
+    th = (th + np.pi) % (2 * np.pi) - np.pi
+    return np.array([x, y, th], dtype=float)
 
 
 def show_trajectories_carousel(
@@ -392,21 +414,27 @@ def show_trajectories_carousel(
     *,
     environment: Optional[Union[Environment, Sequence[Optional[Environment]]]] = None,
     fit_to: str = 'trajectory',
+    error_messages: Optional[Sequence[Optional[str]]] = None,
+    stop_indices: Optional[Sequence[Optional[int]]] = None,
+    stop_fractions: Optional[Sequence[Optional[float]]] = None,
 ):
     """Viewer interattivo per più traiettorie con pulsanti e Play/Pausa.
 
-    - histories/titles devono avere stessa lunghezza
-    - show_orient_every può essere unico o una lista per traiettoria
-    - dts può essere unico o lista; controlla la velocità del player
-    - se save_each=True, all'apertura di ciascuna traiettoria viene salvata un'immagine separata
-    - environment: può essere None, una singola istanza da usare per tutte, oppure una lista per-traiettoria
-    - fit_to: 'trajectory' (default) per avere inquadratura stretta sulla traiettoria, oppure 'environment'
+    - error_messages: messaggi opzionali da mostrare SOLO quando si raggiunge la collisione.
+    - stop_indices: indice (per-traiettoria) a cui fermare il player (collisione); None => nessun blocco.
+    - stop_fractions: frazione temporale tra stop_indices-1 e stop_indices dove avviene l'impatto (0..1].
     """
     assert len(histories) == len(titles) and len(histories) > 0, "Liste vuote o di diversa lunghezza"
     if isinstance(show_orient_every, (list, tuple, np.ndarray)):
         assert len(show_orient_every) == len(histories), "show_orient_every deve avere stessa lunghezza di delle traiettorie"
     if commands_list is not None:
         assert len(commands_list) == len(histories), "commands_list deve avere stessa lunghezza di histories"
+    if error_messages is not None:
+        assert len(error_messages) == len(histories), "error_messages deve avere stessa lunghezza di histories"
+    if stop_indices is not None:
+        assert len(stop_indices) == len(histories), "stop_indices deve avere stessa lunghezza di histories"
+    if stop_fractions is not None:
+        assert len(stop_fractions) == len(histories), "stop_fractions deve avere stessa lunghezza di histories"
 
     # Normalizza dts a lista per uso uniforme
     if dts is None:
@@ -436,15 +464,11 @@ def show_trajectories_carousel(
     fig, ax = plt.subplots(figsize=(7, 7))
     plt.subplots_adjust(bottom=0.18)
 
-    # Stato del viewer:
-    # - idx: indice della traiettoria corrente
-    # - show_info: pannello informazioni attivo
-    # - playing: se True il timer avanza i frame
-    # - frame: indice della posa corrente
-    # - revealed: insieme degli indici di pose statiche già disegnate sulla traiettoria
+    # Stato del viewer
     state = {"idx": 0, "show_info": bool(show_info), "playing": False, "frame": 0, "revealed": set()}
     info_artist: Optional[Text] = None
-    moving_artists: List[Artist] = []  # artisti dell'istanza mobile (da rimuovere a ogni frame)
+    moving_artists: List[Artist] = []
+    err_artist: Optional[Text] = None
 
     def _clear_artists(lst):
         """Rimuove e svuota in sicurezza una lista di artisti."""
@@ -523,29 +547,23 @@ def show_trajectories_carousel(
                  bbox=dict(boxstyle='round', facecolor='white', alpha=0.85, edgecolor='0.7'))
 
     def draw_current():
-        """Ridisegna l'intera traiettoria corrente e resetta lo stato del player."""
-        nonlocal info_artist
-        # Metti in pausa il player durante il ridisegno/cambio traiettoria
+        nonlocal info_artist, err_artist
         state["playing"] = False
         with suppress(Exception):
             timer.stop()
         _clear_moving()
-
-        # Pulisci axes e prepara dati della traiettoria corrente
         ax.clear()
         hist = histories[state["idx"]]
         title = titles[state["idx"]]
         n = len(hist)
         step = _resolve_show_every(state["idx"])
-        env_cur = _resolve_env(state["idx"])  # environment per questa traiettoria (se fornito)
+        env_cur = _resolve_env(state["idx"])
+        # Pulisci eventuale errore precedente
+        err_artist = _update_error_artist(fig, err_artist, None)
 
-        # Disegna la traiettoria senza i robot statici (saranno rivelati in play)
         _plot_static_trajectory_on_axes(ax, hist, step=step, title=title, include_title=True, include_axis_labels=True, draw_glyphs=False, environment=env_cur, fit_to=fit_to)
 
-        # Reset rivelazioni statiche
         state["revealed"] = set()
-
-        # Pannello info opzionale (usa l'ultima posa multipla di step come riferimento iniziale)
         if state["show_info"]:
             idxc = state["idx"]
             dt_cur = dts_resolved[idxc]
@@ -557,14 +575,12 @@ def show_trajectories_carousel(
             _safe_remove_artist(info_artist)
             info_artist = None
 
-        # Inizializza player e prima rivelazione
         state["frame"] = 0
         _draw_moving_at(0)
         _reveal_static_as_needed(0)
         _set_timer_interval_for_current()
         fig.canvas.draw_idle()
 
-        # Salvataggio opzionale di una figura separata con TUTTI i robot statici
         if save_each:
             fig_save, ax_save = plt.subplots(figsize=(7, 7))
             _plot_static_trajectory_on_axes(ax_save, hist, step=step, title=title, include_title=True, include_axis_labels=True, draw_glyphs=True, environment=env_cur, fit_to=fit_to)
@@ -573,35 +589,80 @@ def show_trajectories_carousel(
             print(f"Figura salvata in: {out_path}")
             plt.close(fig_save)
 
+    def _stop_if_collision_reached(next_k: int) -> bool:
+        """Se c'è una collisione definita e la raggiungiamo, ferma il player, mostra il messaggio e ritorna True."""
+        nonlocal err_artist, moving_artists
+        idxc = state["idx"]
+        if stop_indices is None:
+            return False
+        stop_k = stop_indices[idxc]
+        if stop_k is None:
+            return False
+        if next_k >= int(stop_k):
+            # Fermati esattamente al frame di collisione; disegna alla posa interpolata appena prima dell'impatto
+            kcol = int(stop_k)
+            hist = histories[idxc]
+            # Frazione di collisione (se fornita), altrimenti 1.0 (urto esattamente su kcol)
+            frac = 1.0 if stop_fractions is None or stop_fractions[idxc] is None else float(stop_fractions[idxc])
+            # Disegna alla posa tra kcol-1 e kcol (o esattamente su kcol se kcol==0)
+            if kcol >= 1:
+                alpha_safe = max(0.0, min(1.0, frac - 1e-3))  # un pelo prima dell'impatto per evitare compenetrazione visiva
+                pose = _interp_pose(hist[kcol - 1], hist[kcol], alpha_safe)
+                # Aggiorna moving alla posa interpolata
+                _clear_moving()
+                r_robot, d_arrow = _robot_scale_from_history(hist)
+                moving_artists = draw_robot(ax, pose, robot_radius=r_robot, dir_len=d_arrow, color='tab:blue', arrow_color='orange', center_color='orange')
+                # Rivela statici fino al frame precedente
+                _reveal_static_as_needed(kcol - 1)
+                state["frame"] = kcol  # stato logico fermo a kcol
+            else:
+                # Collisione alla posa iniziale
+                _clear_moving()
+                r_robot, d_arrow = _robot_scale_from_history(hist)
+                moving_artists = draw_robot(ax, hist[0], robot_radius=r_robot, dir_len=d_arrow, color='tab:blue', arrow_color='orange', center_color='orange')
+                _reveal_static_as_needed(0)
+                state["frame"] = 0
+            # Mostra messaggio d'errore per questa traiettoria
+            msg = None if error_messages is None else error_messages[idxc]
+            err_artist = _update_error_artist(fig, err_artist, msg)
+            # Metti in pausa e aggiorna pulsante
+            state["playing"] = False
+            with suppress(Exception):
+                timer.stop()
+            with suppress(Exception):
+                btn_play.label.set_text('▶ Play')
+            fig.canvas.draw_idle()
+            return True
+        return False
+
     def _on_timer():
-        """Callback del timer: avanza di un frame, aggiorna robot mobile e info, rivela simboli statici."""
-        nonlocal info_artist
+        nonlocal info_artist, err_artist
         idxc = state["idx"]
         hist = histories[idxc]
         n = len(hist)
-        k = state["frame"] + 1
-        if k >= n:
-            # Fine traiettoria: metti in pausa e ripristina etichetta Play
+        k_next = state["frame"] + 1
+        # Controlla collisione prima di avanzare
+        if _stop_if_collision_reached(k_next):
+            return
+        if k_next >= n:
             state["playing"] = False
             with suppress(Exception):
                 timer.stop()
             with suppress(Exception):
                 btn_play.label.set_text('▶ Play')
             return
-        # Avanza frame
-        state["frame"] = k
-        _draw_moving_at(k)
-        _reveal_static_as_needed(k)
-        # Aggiorna pannello info (se attivo) con i dati del frame corrente
+        # Avanza frame e aggiorna
+        state["frame"] = k_next
+        _draw_moving_at(k_next)
+        _reveal_static_as_needed(k_next)
         if state["show_info"]:
             with suppress(Exception):
                 dt_cur = float(dts_resolved[idxc])
                 cmds = commands_list[idxc] if commands_list is not None else None
-                info_text = _build_info_text(hist, k_pose=int(k), dt=dt_cur, commands=cmds, use_cmd_of_prev=True, show_next_pose=False)
+                info_text = _build_info_text(hist, k_pose=int(k_next), dt=dt_cur, commands=cmds, use_cmd_of_prev=True, show_next_pose=False)
                 info_artist = _update_info_artist(fig, info_artist, info_text)
         fig.canvas.draw_idle()
 
-    # Registra callback del timer
     timer.add_callback(_on_timer)
 
     # Pulsanti con icone Unicode (compatibili su Windows)
@@ -626,6 +687,11 @@ def show_trajectories_carousel(
 
     def on_play(_event):
         """Toggle Play/Pausa: avvia/ferma il timer e aggiorna l'etichetta del pulsante."""
+        # Se già raggiunta collisione, resta in pausa
+        if stop_indices is not None:
+            stop_k = stop_indices[state["idx"]]
+            if stop_k is not None and state["frame"] >= int(stop_k):
+                return
         if not state["playing"]:
             state["playing"] = True
             _set_timer_interval_for_current()
@@ -651,13 +717,10 @@ def show_trajectories_carousel(
     plt.show()
 
 
-def save_trajectories_images(histories, titles, show_orient_every=20, *, environment: Optional[Union[Environment, Sequence[Optional[Environment]]]] = None, fit_to: str = 'trajectory'):
+def save_trajectories_images(histories, titles, show_orient_every=20, *, environment: Optional[Union[Environment, Sequence[Optional[Environment]]]] = None, fit_to: str = 'trajectory', error_messages: Optional[Sequence[Optional[str]]] = None):
     """Salva PNG per ciascuna traiettoria, con simboli del robot completi.
 
-    - show_orient_every può essere unico o lista (per-traiettoria)
-    - environment: può essere None, una singola istanza da usare per tutte, oppure una lista per-traiettoria
-    - fit_to: 'trajectory' (default) per inquadratura stretta, oppure 'environment'
-    - Le figure non vengono mostrate ma solo salvate e chiuse
+    Nota: non mostra messaggi di errore sulle immagini statiche.
     """
     assert len(histories) == len(titles) and len(histories) > 0, "Liste vuote o di diversa lunghezza"
     if isinstance(show_orient_every, (list, tuple, np.ndarray)):
@@ -682,7 +745,6 @@ def save_trajectories_images(histories, titles, show_orient_every=20, *, environ
         fig, ax = plt.subplots(figsize=(7, 7))
         step = _resolve_show_every(i)
         env_cur = _resolve_env(i)
-        # Disegna traiettoria + simboli statici completi (immagine “finale”) su sfondo (se fornito)
         _plot_static_trajectory_on_axes(ax, hist, step=step, title=None, include_title=False, include_axis_labels=False, draw_glyphs=True, environment=env_cur, fit_to=fit_to)
         out_path = _default_save_path(title_str)
         fig.savefig(out_path, dpi=120, bbox_inches='tight')
