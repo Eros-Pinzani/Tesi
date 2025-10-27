@@ -47,6 +47,23 @@ class Environment:
             return None
         return unary_union(self.obstacles)
 
+    def first_intersection_with_line(self, line: LineString):
+        """
+        Restituisce il punto di intersezione più vicino all'origine del LineString (line.coords[0]),
+        come (x, y) tuple, oppure None se non ci sono intersezioni.
+        """
+        union = self.obstacles_union()
+        if union is None:
+            return None
+
+        inter = line.intersection(union)
+        if inter.is_empty:
+            return None
+
+        # Possibili tipi: Point, MultiPoint, geometryCollection, LineString, MultiLineString (se il raggio taglia un bordo).
+        # Estraiamo i punti e scegliamo il più vicino all'origine del raggio.
+        origin = Point(line.coords[0])
+
     def plot(self, ax=None, facecolor: str = 'lightgrey', edgecolor: str = 'k') -> None:
         """Disegna bounds e ostacoli (se ax è None crea una figura nuova)."""
         own_fig = False
