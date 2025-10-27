@@ -3,7 +3,6 @@
 from typing import List, Tuple
 import numpy as np
 from environment import Environment
-# Geometrie per calcoli strategici (buffer corridoio e piazzamento)
 from shapely.geometry import LineString, Point, box as shapely_box
 
 
@@ -87,89 +86,143 @@ def setup_environments_per_trajectory(histories: List[np.ndarray], titles: List[
                 return True
         return False
 
-    def _place_rect_frac_strategic(
-        env: Environment,
-        bx0: float,
-        by0: float,
-        bx1: float,
-        by1: float,
-        path_line: LineString,
-        path_buffer,
-        fx: float,
-        fy: float,
-        wf: float,
-        hf: float,
-        *,
-        grow_out: float = 0.12,
-        max_iter: int = 18,
-    ) -> None:
-        """Piazza un rettangolo centrato alla frazione (fx, fy) dei bounds, con dimensioni
-        proporzionali (wf, hf), spostandolo leggermente se interseca il corridoio di sicurezza
-        o altri ostacoli.
-        """
-        # Dimensioni iniziali
-        W, H = _dims_from_frac(bx0, by0, bx1, by1, wf, hf, min_size=0.20)
-        # Centro iniziale da frazioni
+    # ---------- Nuovi helper per forme non rettangolari ----------
+    def _bounds_spans(bx0: float, by0: float, bx1: float, by1: float) -> Tuple[float, float]:
+        return float(bx1 - bx0), float(by1 - by0)
+
+    def _nearest_outward_dir(path_line: LineString, bx0: float, by0: float, bx1: float, by1: float, cx: float, cy: float, fx: float, fy: float) -> Tuple[float, float]:
+        try:
+            s = float(path_line.project(Point(cx, cy)))
+            p_close = path_line.interpolate(s)
+            vx = float(cx - p_close.x)
+            vy = float(cy - p_close.y)
+        except Exception:
+            vx = float(cx - 0.5 * (bx0 + bx1))
+            vy = float(cy - 0.5 * (by0 + by1))
+        n = float(np.hypot(vx, vy))
+        if n < 1e-6:
+            vx = (0.5 - fx)
+            vy = (0.5 - fy)
+            n = float(np.hypot(vx, vy)) or 1.0
+        return vx / n, vy / n
+
+    def _place_circle_frac(env: Environment, bx0: float, by0: float, bx1: float, by1: float, path_line: LineString, path_buffer, fx: float, fy: float, r_frac: float, *, max_iter: int = 20) -> None:
+        spanx, spany = _bounds_spans(bx0, by0, bx1, by1)
+        R = max(0.10, float(r_frac) * 0.5 * min(spanx, spany))
         cx = bx0 + float(fx) * (bx1 - bx0)
         cy = by0 + float(fy) * (by1 - by0)
-
-        # Helper per costruire poligono rettangolo shapely
-        def _rect_poly_at(cx_: float, cy_: float, W_: float, H_: float):
-            x0, y0, x1, y1 = _rect_from_center(cx_, cy_, W_, H_)
-            return shapely_box(x0, y0, x1, y1)
-
-        # Assicurati che parta dentro ai bounds
-        cx = _clamp(cx, bx0 + W/2, bx1 - W/2)
-        cy = _clamp(cy, by0 + H/2, by1 - H/2)
-
-        rect = _rect_poly_at(cx, cy, W, H)
-
-        # Step di spostamento proporzionale alla clearance
-        step = max(0.02 * max(bx1 - bx0, by1 - by0), 0.10)
-
-        # Strategia: se interseca la traiettoria o ostacoli, sposta il centro nella direzione dal punto più vicino del percorso verso l'esterno
+        cx = _clamp(cx, bx0 + R, bx1 - R)
+        cy = _clamp(cy, by0 + R, by1 - R)
+        from shapely.geometry import Point as ShapelyPoint
+        geom = ShapelyPoint(cx, cy).buffer(R, resolution=32)
+        step = max(0.02 * max(spanx, spany), 0.10)
         it = 0
-        while (rect.intersects(path_buffer) or _intersects_any(env, rect) or not _inside_bounds(env, rect)) and it < max_iter:
-            # Punto del percorso più vicino al centro
-            try:
-                s = float(path_line.project(Point(cx, cy)))
-                p_closest = path_line.interpolate(s)
-                vx = float(cx - p_closest.x)
-                vy = float(cy - p_closest.y)
-            except Exception:
-                # fallback: allontanati dal centro dei bounds
-                vx = float(cx - 0.5 * (bx0 + bx1))
-                vy = float(cy - 0.5 * (by0 + by1))
-            # Se vettore è troppo piccolo, scegli direzione verso l'angolo più vicino al bordo opposto
-            norm = float(np.hypot(vx, vy))
-            if norm < 1e-6:
-                vx = (0.5 - fx)
-                vy = (0.5 - fy)
-                norm = float(np.hypot(vx, vy)) or 1.0
-            ux, uy = vx / norm, vy / norm
-            # Sposta
+        while (geom.intersects(path_buffer) or _intersects_any(env, geom) or not _inside_bounds(env, geom)) and it < max_iter:
+            ux, uy = _nearest_outward_dir(path_line, bx0, by0, bx1, by1, cx, cy, fx, fy)
             cx += ux * step
             cy += uy * step
-            # Rimani entro i bounds (tenendo margine metà lato)
-            cx = _clamp(cx, bx0 + W/2, bx1 - W/2)
-            cy = _clamp(cy, by0 + H/2, by1 - H/2)
-            rect = _rect_poly_at(cx, cy, W, H)
+            cx = _clamp(cx, bx0 + R, bx1 - R)
+            cy = _clamp(cy, by0 + R, by1 - R)
+            geom = ShapelyPoint(cx, cy).buffer(R, resolution=32)
             it += 1
+        shrink = 0
+        while (geom.intersects(path_buffer) or _intersects_any(env, geom) or not _inside_bounds(env, geom)) and shrink < 6:
+            R *= 0.88
+            R = max(R, 0.08)
+            cx = _clamp(cx, bx0 + R, bx1 - R)
+            cy = _clamp(cy, by0 + R, by1 - R)
+            geom = ShapelyPoint(cx, cy).buffer(R, resolution=32)
+            shrink += 1
+        if not (geom.intersects(path_buffer) or _intersects_any(env, geom) or not _inside_bounds(env, geom)):
+            env.add_circle(cx, cy, R)
 
-        # Se ancora problematico, prova a ridurre dimensioni e ripeti piccoli tentativi locali
-        shrink_attempts = 0
-        while (rect.intersects(path_buffer) or _intersects_any(env, rect) or not _inside_bounds(env, rect)) and shrink_attempts < 6:
-            W *= (1.0 - 0.12)
-            H *= (1.0 - 0.12)
-            W = max(W, 0.18)
-            H = max(H, 0.18)
-            rect = _rect_poly_at(cx, cy, W, H)
-            shrink_attempts += 1
+    def _poly_vertices(template: str, W: float, H: float) -> List[Tuple[float, float]]:
+        t = 0.35 * min(W, H)
+        if template == 'L':
+            return [
+                (-W/2, -H/2), (W/2, -H/2), (W/2, -H/2 + t), (-W/2 + t, -H/2 + t),
+                (-W/2 + t, H/2), (-W/2, H/2)
+            ]
+        else:
+            return [(-W/2, -H/2), (W/2, -H/2), (0.0, H/2)]
 
-        # Se alla fine è valido, aggiungi. In caso contrario, non aggiungere (evita collisioni certo)
-        if not (rect.intersects(path_buffer) or _intersects_any(env, rect) or not _inside_bounds(env, rect)):
-            x0, y0, x1, y1 = rect.bounds
-            env.add_rectangle(x0, y0, x1, y1)
+    def _rotate_points(pts: List[Tuple[float, float]], angle_deg: float) -> List[Tuple[float, float]]:
+        th = np.deg2rad(float(angle_deg))
+        c, s = float(np.cos(th)), float(np.sin(th))
+        return [(c*x - s*y, s*x + c*y) for (x, y) in pts]
+
+    def _translate_points(pts: List[Tuple[float, float]], dx: float, dy: float) -> List[Tuple[float, float]]:
+        return [(x + dx, y + dy) for (x, y) in pts]
+
+    def _place_polygon_frac(env: Environment, bx0: float, by0: float, bx1: float, by1: float, path_line: LineString, path_buffer, fx: float, fy: float, wf: float, hf: float, angle_deg: float, template: str = 'L', *, max_iter: int = 22) -> None:
+        W, H = _dims_from_frac(bx0, by0, bx1, by1, wf, hf, min_size=0.22)
+        cx = bx0 + float(fx) * (bx1 - bx0)
+        cy = by0 + float(fy) * (by1 - by0)
+        local = _poly_vertices(template, W, H)
+        world = _translate_points(_rotate_points(local, angle_deg), cx, cy)
+        from shapely.geometry import Polygon as ShapelyPolygon
+        geom = ShapelyPolygon(world)
+        def _clamp_center_inside(cx_: float, cy_: float, poly) -> Tuple[float, float, object]:
+            x0, y0, x1, y1 = poly.bounds
+            half_w = 0.5 * (x1 - x0)
+            half_h = 0.5 * (y1 - y0)
+            cx2 = _clamp(cx_, bx0 + half_w, bx1 - half_w)
+            cy2 = _clamp(cy_, by0 + half_h, by1 - half_h)
+            world2 = _translate_points(_rotate_points(local, angle_deg), cx2, cy2)
+            return cx2, cy2, ShapelyPolygon(world2)
+        cx, cy, geom = _clamp_center_inside(cx, cy, geom)
+        step = max(0.02 * max(bx1 - bx0, by1 - by0), 0.10)
+        it = 0
+        while (geom.intersects(path_buffer) or _intersects_any(env, geom) or not _inside_bounds(env, geom)) and it < max_iter:
+            ux, uy = _nearest_outward_dir(path_line, bx0, by0, bx1, by1, cx, cy, fx, fy)
+            cx += ux * step
+            cy += uy * step
+            cx, cy, geom = _clamp_center_inside(cx, cy, geom)
+            it += 1
+        shrink = 0
+        while (geom.intersects(path_buffer) or _intersects_any(env, geom) or not _inside_bounds(env, geom)) and shrink < 6:
+            W *= 0.88
+            H *= 0.88
+            local = _poly_vertices(template, W, H)
+            world = _translate_points(_rotate_points(local, angle_deg), cx, cy)
+            geom = ShapelyPolygon(world)
+            cx, cy, geom = _clamp_center_inside(cx, cy, geom)
+            shrink += 1
+        if not (geom.intersects(path_buffer) or _intersects_any(env, geom) or not _inside_bounds(env, geom)):
+            env.add_polygon(list(geom.exterior.coords)[:-1])
+
+    def _place_wall_frac(env: Environment, bx0: float, by0: float, bx1: float, by1: float, path_line: LineString, path_buffer, fx0: float, fy0: float, fx1: float, fy1: float, thick_frac: float, *, max_iter: int = 22) -> None:
+        spanx, spany = _bounds_spans(bx0, by0, bx1, by1)
+        t = max(0.06, float(thick_frac) * 0.10 * max(spanx, spany))
+        x0 = bx0 + float(fx0) * (bx1 - bx0)
+        y0 = by0 + float(fy0) * (by1 - by0)
+        x1 = bx0 + float(fx1) * (bx1 - bx0)
+        y1 = by0 + float(fy1) * (by1 - by0)
+        from shapely.geometry import LineString as ShapelyLine
+        seg = ShapelyLine([(x0, y0), (x1, y1)])
+        geom = seg.buffer(0.5 * t, cap_style='flat', join_style='bevel')
+        def _translate_wall(dx, dy):
+            s2 = ShapelyLine([(x0 + dx, y0 + dy), (x1 + dx, y1 + dy)])
+            return s2.buffer(0.5 * t, cap_style='flat', join_style='bevel')
+        cx = 0.5 * (x0 + x1)
+        cy = 0.5 * (y0 + y1)
+        step = max(0.02 * max(spanx, spany), 0.10)
+        it = 0
+        while (geom.intersects(path_buffer) or _intersects_any(env, geom) or not _inside_bounds(env, geom)) and it < max_iter:
+            ux, uy = _nearest_outward_dir(path_line, bx0, by0, bx1, by1, cx, cy, 0.5*(fx0+fx1), 0.5*(fy0+fy1))
+            cx += ux * step
+            cy += uy * step
+            dx = cx - 0.5 * (x0 + x1)
+            dy = cy - 0.5 * (y0 + y1)
+            geom = _translate_wall(dx, dy)
+            it += 1
+        shrink = 0
+        while (geom.intersects(path_buffer) or _intersects_any(env, geom) or not _inside_bounds(env, geom)) and shrink < 6:
+            t *= 0.88
+            geom = seg.buffer(0.5 * t, cap_style='flat', join_style='bevel')
+            shrink += 1
+        if not (geom.intersects(path_buffer) or _intersects_any(env, geom) or not _inside_bounds(env, geom)):
+            env.add_wall(x0, y0, x1, y1, thickness=t)
 
     for idx, (hist, _title) in enumerate(zip(histories, titles)):
         env = Environment()
@@ -221,11 +274,39 @@ def setup_environments_per_trajectory(histories: List[np.ndarray], titles: List[
                 (0.82, 0.32, 0.12, 0.12),
             ]
 
-        # Inserisci i rettangoli strategici, con auto-aggiustamento anti-collisione percorso/ostacoli
-        for fx, fy, wf, hf in candidates:
-            _place_rect_frac_strategic(env, bx0, by0, bx1, by1, path_line, path_buffer, fx, fy, wf, hf)
+        # Sostituisco la logica che inseriva rettangoli con forme miste per traiettoria
+        if idx == 0:  # Rettilinea (v costante)
+            _place_circle_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.22, 0.28, 0.06)
+            _place_polygon_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.58, 0.70, 0.16, 0.12, 15.0, 'triangle')
+            _place_wall_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.78, 0.30, 0.92, 0.46, 0.04)
+        elif idx == 1:  # Rettilinea (v variabile)
+            _place_polygon_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.18, 0.70, 0.18, 0.12, -20.0, 'L')
+            _place_circle_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.46, 0.26, 0.05)
+            _place_wall_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.70, 0.56, 0.82, 0.62, 0.03)
+        elif idx == 2:  # Circolare (v costante)
+            _place_circle_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.14, 0.54, 0.06)
+            _place_polygon_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.50, 0.14, 0.18, 0.12, 30.0, 'triangle')
+            _place_wall_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.84, 0.60, 0.92, 0.74, 0.04)
+            # Nuovo ostacolo esterno al cerchio
+            _place_circle_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.08, 0.90, 0.04)
+        elif idx == 3:  # Circolare (v variabile)
+            _place_polygon_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.22, 0.20, 0.16, 0.12, -35.0, 'L')
+            _place_circle_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.60, 0.84, 0.05)
+            _place_wall_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.84, 0.34, 0.94, 0.38, 0.03)
+            # Nuovo ostacolo esterno al cerchio
+            _place_circle_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.92, 0.10, 0.04)
+        elif idx == 4:  # Traiettoria a 8
+            _place_polygon_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.18, 0.44, 0.16, 0.18, 10.0, 'L')
+            _place_wall_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.46, 0.22, 0.64, 0.22, 0.05)
+            _place_circle_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.82, 0.56, 0.05)
+            # Nuovo ostacolo in alto: triangolo compatto nella parte superiore dei bounds
+            _place_polygon_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.70, 0.88, 0.14, 0.12, 5.0, 'triangle')
+        else:  # Random walk
+            _place_circle_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.20, 0.24, 0.05)
+            _place_polygon_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.50, 0.72, 0.14, 0.16, -12.0, 'triangle')
+            # Sposto il muro rettangolare lungo più in alto a destra per evitare sovrapposizione con la traiettoria
+            _place_wall_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.88, 0.80, 0.96, 0.88, 0.04)
 
         envs.append(env)
 
     return envs
-
