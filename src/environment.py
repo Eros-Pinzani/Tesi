@@ -60,9 +60,56 @@ class Environment:
         if inter.is_empty:
             return None
 
-        # Possibili tipi: Point, MultiPoint, geometryCollection, LineString, MultiLineString (se il raggio taglia un bordo).
-        # Estraiamo i punti e scegliamo il più vicino all'origine del raggio.
+        # Possibili tipi: Point, MultiPoint, LineString, MultiLineString, GeometryCollection
         origin = Point(line.coords[0])
+
+        try:
+            # Caso semplice: un solo punto
+            if isinstance(inter, Point):
+                return float(inter.x), float(inter.y)
+            # Più punti: scegli il più vicino all'origine
+            if getattr(inter, 'geom_type', '') == 'MultiPoint':
+                best = None
+                best_d = float('inf')
+                for pt in inter.geoms:  # type: ignore[attr-defined]
+                    d = origin.distance(pt)
+                    if d < best_d:
+                        best_d = d
+                        best = pt
+                if best is not None:
+                    return float(best.x), float(best.y)
+            # Segmenti/collezioni: prendi il punto su 'inter' più vicino all'origine del raggio
+            from shapely.ops import nearest_points  # import locale per evitare dipendenza forte a livello modulo
+            _, p = nearest_points(origin, inter)
+            return float(p.x), float(p.y)
+        except Exception:
+            # Fallback robusto: proietta le coordinate del tipo di geometria in una lista e scegli la più vicina
+            def _iter_points(g):
+                gt = getattr(g, 'geom_type', '')
+                if gt == 'Point':
+                    yield g
+                elif gt == 'MultiPoint':
+                    for h in g.geoms:
+                        yield h
+                elif gt in ('LineString', 'LinearRing'):
+                    for (x, y) in g.coords:
+                        yield Point(x, y)
+                elif gt == 'MultiLineString':
+                    for h in g.geoms:
+                        yield from _iter_points(h)
+                elif gt == 'GeometryCollection':
+                    for h in g.geoms:
+                        yield from _iter_points(h)
+            best = None
+            best_d = float('inf')
+            for pt in _iter_points(inter):
+                d = origin.distance(pt)
+                if d < best_d:
+                    best_d = d
+                    best = pt
+            if best is None:
+                return None
+            return float(best.x), float(best.y)
 
     def plot(self, ax=None, facecolor: str = 'lightgrey', edgecolor: str = 'k') -> None:
         """Disegna bounds e ostacoli (se ax è None crea una figura nuova)."""

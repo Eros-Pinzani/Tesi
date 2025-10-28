@@ -3,7 +3,8 @@
 from typing import List, Tuple
 import numpy as np
 from environment import Environment
-from shapely.geometry import LineString, Point, box as shapely_box
+from shapely.geometry import LineString, Point
+from shapely.geometry import Polygon as ShapelyPolygon
 
 
 def setup_environment(histories: List[np.ndarray]) -> Environment:
@@ -160,9 +161,8 @@ def setup_environments_per_trajectory(histories: List[np.ndarray], titles: List[
         cy = by0 + float(fy) * (by1 - by0)
         local = _poly_vertices(template, W, H)
         world = _translate_points(_rotate_points(local, angle_deg), cx, cy)
-        from shapely.geometry import Polygon as ShapelyPolygon
         geom = ShapelyPolygon(world)
-        def _clamp_center_inside(cx_: float, cy_: float, poly) -> Tuple[float, float, object]:
+        def _clamp_center_inside(cx_: float, cy_: float, poly: ShapelyPolygon) -> Tuple[float, float, ShapelyPolygon]:
             x0, y0, x1, y1 = poly.bounds
             half_w = 0.5 * (x1 - x0)
             half_h = 0.5 * (y1 - y0)
@@ -287,14 +287,18 @@ def setup_environments_per_trajectory(histories: List[np.ndarray], titles: List[
             _place_circle_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.14, 0.54, 0.06)
             _place_polygon_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.50, 0.14, 0.18, 0.12, 30.0, 'triangle')
             _place_wall_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.84, 0.60, 0.92, 0.74, 0.04)
-            # Nuovo ostacolo esterno al cerchio
+            # Nuovo ostacolo esterno al cerchio (alto a sinistra)
             _place_circle_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.08, 0.90, 0.04)
+            # Nuovo ostacolo in alto a destra (triangolo compatto)
+            _place_polygon_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.90, 0.90, 0.12, 0.10, -10.0, 'triangle')
         elif idx == 3:  # Circolare (v variabile)
             _place_polygon_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.22, 0.20, 0.16, 0.12, -35.0, 'L')
             _place_circle_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.60, 0.84, 0.05)
             _place_wall_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.84, 0.34, 0.94, 0.38, 0.03)
-            # Nuovo ostacolo esterno al cerchio
+            # Nuovo ostacolo esterno al cerchio (in basso a destra)
             _place_circle_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.92, 0.10, 0.04)
+            # Nuovo ostacolo in alto a destra (triangolo compatto)
+            _place_polygon_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.88, 0.90, 0.12, 0.10, 8.0, 'triangle')
         elif idx == 4:  # Traiettoria a 8
             _place_polygon_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.18, 0.44, 0.16, 0.18, 10.0, 'L')
             _place_wall_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.46, 0.22, 0.64, 0.22, 0.05)

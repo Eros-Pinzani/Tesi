@@ -32,6 +32,7 @@ from matplotlib.text import Text  # Artista di testo (pannello info, legenda)
 from contextlib import suppress  # Ignora eccezioni non critiche in operazioni best-effort
 from matplotlib.artist import Artist  # Tipo base di tutti gli elementi disegnabili (patch, arrow, ecc.)
 from environment import Environment  # Per disegnare confini e ostacoli
+from lidar import Lidar  # Tipo del sensore per visualizzazione raggi
 
 
 # Helper per rimuovere in sicurezza un artista matplotlib (gestisce None ed eccezioni)
@@ -133,18 +134,26 @@ def draw_robot(ax, state, robot_radius=0.1, color='tab:blue', dir_len=None, arro
     return artists
 
 
-def _default_save_path(title: str) -> Path:
-    """Costruisce il percorso di salvataggio in img/ con titolo normalizzato + timestamp."""
-    # project_root = cartella padre di 'src'
+def _default_save_path(title: str, *, subfolder: Optional[str] = None) -> Path:
+    """Costruisce il percorso di salvataggio in img/ (o sotto-cartella) con titolo normalizzato + timestamp.
+    - subfolder: percorso relativo dentro img/ (es. 'trajectories' o 'scans/rettilinea_v_costante')
+    """
     project_root = Path(__file__).resolve().parents[1]
     img_dir = project_root / 'img'
-    img_dir.mkdir(parents=True, exist_ok=True)  # Assicura l'esistenza della cartella
-    # Normalizzazione del titolo per un nome file pulito
-    base = title.lower().strip() or 'traiettoria'
-    base = re.sub(r'\s+', '_', base)
-    base = re.sub(r'[^a-z0-9_\-]', '', base)
+    if subfolder:
+        img_dir = img_dir / subfolder
+    img_dir.mkdir(parents=True, exist_ok=True)
+    base = _slugify(title)
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     return img_dir / f"{base}_{stamp}.png"
+
+
+def _slugify(text: str) -> str:
+    """Normalizza un testo per uso in nomi file/cartelle: minuscole, _ e - consentiti."""
+    base = (text or '').lower().strip() or 'traiettoria'
+    base = re.sub(r'\s+', '_', base)
+    base = re.sub(r'[^a-z0-9_\-]', '', base)
+    return base
 
 
 def _robot_scale_from_history(history):
@@ -370,6 +379,21 @@ def _update_error_artist(fig, err_artist: Optional[Text], msg: Optional[str]) ->
     return err_artist
 
 
+def _draw_lidar_rays(ax, origin_xy, lidar_points: np.ndarray, *, ray_color: str = 'tab:red', hit_marker_color: str = 'tab:red', alpha: float = 0.35) -> List[Artist]:
+    """Disegna i raggi LiDAR come segmenti dall'origine ai punti misurati; ritorna gli artisti per pulizia."""
+    x0, y0 = map(float, origin_xy[:2])
+    arts: List[Artist] = []
+    # Linee dei raggi
+    for px, py in lidar_points:
+        ln = ax.plot([x0, float(px)], [y0, float(py)], color=ray_color, alpha=alpha, linewidth=0.8, zorder=1.5)[0]
+        arts.append(ln)
+    # Marker sui punti di impatto (leggeri)
+    scat = ax.scatter(lidar_points[:, 0], lidar_points[:, 1], s=5, c=hit_marker_color, alpha=min(1.0, alpha + 0.20), zorder=2)
+    if isinstance(scat, Artist):
+        arts.append(scat)
+    return arts
+
+
 def plot_trajectory(history, show_orient_every=20, title="Traiettoria del robot", save_path=None, *, environment: Optional[Environment] = None, fit_to: str = 'trajectory', error_message: Optional[str] = None):
     """Plotta una singola traiettoria e (opzionalmente) salva l'immagine PNG.
 
@@ -378,7 +402,7 @@ def plot_trajectory(history, show_orient_every=20, title="Traiettoria del robot"
     fig, ax = plt.subplots(figsize=(7, 7))
     step = max(1, int(show_orient_every))
     _plot_static_trajectory_on_axes(ax, history, step=step, title=title, include_title=True, include_axis_labels=True, environment=environment, fit_to=fit_to)
-    out_path = Path(save_path) if save_path else _default_save_path(title)
+    out_path = Path(save_path) if save_path else _default_save_path(title, subfolder='trajectories')
     fig.savefig(out_path, dpi=120, bbox_inches='tight')
     print(f"Figura salvata in: {out_path}")
     plt.show()
@@ -417,12 +441,15 @@ def show_trajectories_carousel(
     error_messages: Optional[Sequence[Optional[str]]] = None,
     stop_indices: Optional[Sequence[Optional[int]]] = None,
     stop_fractions: Optional[Sequence[Optional[float]]] = None,
+    lidar: Optional[Union[Lidar, Sequence[Optional[Lidar]]]] = None,
+    show_lidar: bool = True,
 ):
     """Viewer interattivo per più traiettorie con pulsanti e Play/Pausa.
 
     - error_messages: messaggi opzionali da mostrare SOLO quando si raggiunge la collisione.
     - stop_indices: indice (per-traiettoria) a cui fermare il player (collisione); None => nessun blocco.
     - stop_fractions: frazione temporale tra stop_indices-1 e stop_indices dove avviene l'impatto (0..1].
+    - lidar: singolo sensore o lista per-traiettoria; se presente, disegna i raggi del frame corrente.
     """
     assert len(histories) == len(titles) and len(histories) > 0, "Liste vuote o di diversa lunghezza"
     if isinstance(show_orient_every, (list, tuple, np.ndarray)):
@@ -435,6 +462,8 @@ def show_trajectories_carousel(
         assert len(stop_indices) == len(histories), "stop_indices deve avere stessa lunghezza di histories"
     if stop_fractions is not None:
         assert len(stop_fractions) == len(histories), "stop_fractions deve avere stessa lunghezza di histories"
+    if isinstance(lidar, (list, tuple)):
+        assert len(lidar) == len(histories), "lidar (lista) deve avere stessa lunghezza di histories"
 
     # Normalizza dts a lista per uso uniforme
     if dts is None:
@@ -460,6 +489,13 @@ def show_trajectories_carousel(
             return environment[idx]
         return environment
 
+    def _resolve_lidar(idx: int) -> Optional[Lidar]:
+        if lidar is None:
+            return None
+        if isinstance(lidar, (list, tuple)):
+            return lidar[idx]
+        return lidar
+
     # Figura principale (spazio extra sotto per i pulsanti)
     fig, ax = plt.subplots(figsize=(7, 7))
     plt.subplots_adjust(bottom=0.18)
@@ -468,6 +504,7 @@ def show_trajectories_carousel(
     state = {"idx": 0, "show_info": bool(show_info), "playing": False, "frame": 0, "revealed": set()}
     info_artist: Optional[Text] = None
     moving_artists: List[Artist] = []
+    moving_lidar_artists: List[Artist] = []
     err_artist: Optional[Text] = None
 
     def _clear_artists(lst):
@@ -494,8 +531,25 @@ def show_trajectories_carousel(
 
     def _clear_moving():
         """Rimuove l'istanza mobile (tutti i suoi artisti)."""
-        nonlocal moving_artists
+        nonlocal moving_artists, moving_lidar_artists
         _clear_artists(moving_artists)
+        _clear_artists(moving_lidar_artists)
+
+    def _draw_lidar_for_pose(pose_k):
+        nonlocal moving_lidar_artists
+        moving_lidar_artists = []
+        if not show_lidar:
+            return
+        env_cur = _resolve_env(state["idx"])
+        lid = _resolve_lidar(state["idx"])  # per-traiettoria o singolo
+        if env_cur is None or lid is None:
+            return
+        try:
+            points = lid.scan(pose_k, env_cur, return_ranges=False)
+            moving_lidar_artists = _draw_lidar_rays(ax, pose_k, points)
+        except Exception:
+            # Non bloccare il viewer in caso di errore runtime nel sensore
+            pass
 
     def _draw_moving_at(k: int):
         """Disegna il robot mobile alla posa k, sostituendo quello precedente."""
@@ -506,6 +560,7 @@ def show_trajectories_carousel(
         r_robot, d_arrow = _robot_scale_from_history(hist)
         # draw_robot ritorna gli artisti creati, li conserviamo per rimozione al frame successivo
         moving_artists = draw_robot(ax, hist[k], robot_radius=r_robot, dir_len=d_arrow, color='tab:blue', arrow_color='orange', center_color='orange')
+        _draw_lidar_for_pose(hist[k])
 
     def _reveal_static_as_needed(k: int):
         """Disegna i robot statici per tutti gli indici <= k, se non già disegnati (rivelazione progressiva)."""
@@ -584,14 +639,14 @@ def show_trajectories_carousel(
         if save_each:
             fig_save, ax_save = plt.subplots(figsize=(7, 7))
             _plot_static_trajectory_on_axes(ax_save, hist, step=step, title=title, include_title=True, include_axis_labels=True, draw_glyphs=True, environment=env_cur, fit_to=fit_to)
-            out_path = _default_save_path(title)
+            out_path = _default_save_path(title, subfolder='trajectories')
             fig_save.savefig(out_path, dpi=120, bbox_inches='tight')
             print(f"Figura salvata in: {out_path}")
             plt.close(fig_save)
 
     def _stop_if_collision_reached(next_k: int) -> bool:
         """Se c'è una collisione definita e la raggiungiamo, ferma il player, mostra il messaggio e ritorna True."""
-        nonlocal err_artist, moving_artists
+        nonlocal err_artist, moving_artists, moving_lidar_artists
         idxc = state["idx"]
         if stop_indices is None:
             return False
@@ -612,6 +667,7 @@ def show_trajectories_carousel(
                 _clear_moving()
                 r_robot, d_arrow = _robot_scale_from_history(hist)
                 moving_artists = draw_robot(ax, pose, robot_radius=r_robot, dir_len=d_arrow, color='tab:blue', arrow_color='orange', center_color='orange')
+                _draw_lidar_for_pose(pose)
                 # Rivela statici fino al frame precedente
                 _reveal_static_as_needed(kcol - 1)
                 state["frame"] = kcol  # stato logico fermo a kcol
@@ -620,10 +676,12 @@ def show_trajectories_carousel(
                 _clear_moving()
                 r_robot, d_arrow = _robot_scale_from_history(hist)
                 moving_artists = draw_robot(ax, hist[0], robot_radius=r_robot, dir_len=d_arrow, color='tab:blue', arrow_color='orange', center_color='orange')
+                _draw_lidar_for_pose(hist[0])
                 _reveal_static_as_needed(0)
                 state["frame"] = 0
             # Mostra messaggio d'errore per questa traiettoria
-            msg = None if error_messages is None else error_messages[idxc]
+            default_msg = "Ostacolo lungo la traiettoria"
+            msg = (error_messages[idxc] if (error_messages is not None) else default_msg)
             err_artist = _update_error_artist(fig, err_artist, msg)
             # Metti in pausa e aggiorna pulsante
             state["playing"] = False
@@ -746,7 +804,51 @@ def save_trajectories_images(histories, titles, show_orient_every=20, *, environ
         step = _resolve_show_every(i)
         env_cur = _resolve_env(i)
         _plot_static_trajectory_on_axes(ax, hist, step=step, title=None, include_title=False, include_axis_labels=False, draw_glyphs=True, environment=env_cur, fit_to=fit_to)
-        out_path = _default_save_path(title_str)
+        out_path = _default_save_path(title_str, subfolder='trajectories')
         fig.savefig(out_path, dpi=120, bbox_inches='tight')
         print(f"Figura salvata in: {out_path}")
         plt.close(fig)
+
+
+def save_lidar_scans_images(history: np.ndarray, title: str, lidar: Lidar, environment: Optional[Environment], dt: float, *, interval_s: float = 2.0, fit_to: str = 'environment') -> None:
+    """Salva immagini delle scansioni LiDAR a intervalli regolari lungo una singola traiettoria.
+
+    - history: array (N,3) delle pose
+    - title: titolo base usato nel nome file
+    - lidar: sensore
+    - environment: ambiente per intersezioni
+    - dt: passo temporale della storia
+    - interval_s: intervallo tra scansioni (secondi)
+    - fit_to: 'environment' raccomandato per includere bounds.
+    """
+    if history is None or len(history) == 0:
+        return
+    step_idx = max(1, int(round(float(interval_s) / max(1e-9, float(dt)))))
+    N = len(history)
+    r_robot, d_arrow = _robot_scale_from_history(history)
+    case_folder = f"scans/{_slugify(title)}"
+
+    for k in range(0, N, step_idx):
+        pose = history[k]
+        fig, ax = plt.subplots(figsize=(7, 7))
+        _plot_static_trajectory_on_axes(ax, history, step=max(1, N + 1), title=None, include_title=False, include_axis_labels=False, draw_glyphs=False, environment=environment, fit_to=fit_to)
+        draw_robot(ax, pose, robot_radius=r_robot, dir_len=d_arrow, color='tab:blue', arrow_color='orange', center_color='orange')
+        try:
+            points = lidar.scan(pose, environment, return_ranges=False) if environment is not None else None
+        except Exception:
+            points = None
+        if points is not None:
+            _draw_lidar_rays(ax, pose, points)
+        t = float(k) * float(dt)
+        ax.set_title(f"Scansione LiDAR — {title} — t={t:.2f}s")
+        # Nome file descrittivo dentro la cartella specifica del caso
+        filename_base = f"scan_t{t:.2f}s"
+        stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+        project_root = Path(__file__).resolve().parents[1]
+        out_dir = project_root / 'img' / case_folder
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{_slugify(title)}_{filename_base}_{stamp}.png"
+        fig.savefig(out_path, dpi=120, bbox_inches='tight')
+        print(f"Figura scansione salvata in: {out_path}")
+        plt.close(fig)
+
