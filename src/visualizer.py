@@ -960,3 +960,70 @@ def save_lidar_scans_images(
         print(f"Figura punti-only salvata in: {out_path_pts}")
         plt.close(fig2)
 
+
+def save_lidar_polar_images(
+    history: np.ndarray,
+    title: str,
+    lidar: Lidar,
+    environment: Optional[Environment],
+    dt: float,
+    *,
+    interval_s: float = 2.0,
+    include_misses: bool = True,
+) -> None:
+    """Salva grafici r(θ) delle scansioni LiDAR lungo una traiettoria.
+
+    - Asse x: θ (angolo relativo del raggio rispetto al frame del LiDAR), in radianti
+    - Asse y: r (distanza misurata), in metri
+    - Mostra i colpi reali (hit) e, opzionalmente, anche i miss (raggi a r_max) con colore differente.
+    """
+    if history is None or len(history) == 0:
+        return
+    step_idx = max(1, int(round(float(interval_s) / max(1e-9, float(dt)))))
+    N = len(history)
+
+    # Precalcolo degli angoli relativi dei raggi (come in Lidar.scan)
+    half = 0.5 * float(lidar.angle_span)
+    rel_angles = np.linspace(-half, half, num=lidar.n_rays, endpoint=True)
+
+    project_root = Path(__file__).resolve().parents[1]
+    out_dir = project_root / 'img' / f"scans_polar/{_slugify(title)}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    for k in range(0, N, step_idx):
+        pose = history[k]
+        try:
+            _pts, ranges = lidar.scan(pose, environment, return_ranges=True)
+        except Exception:
+            continue
+        ranges = np.asarray(ranges)
+        mask_hit = ranges < float(lidar.r_max) - 1e-12
+        mask_miss = ~mask_hit
+        th_hit = rel_angles[mask_hit]
+        rr_hit = ranges[mask_hit]
+        th_miss = rel_angles[mask_miss]
+        rr_miss = ranges[mask_miss]
+
+        fig, ax = plt.subplots(figsize=(7, 4))
+        # Punti di hit
+        if th_hit.size > 0:
+            ax.scatter(th_hit, rr_hit, s=10, c='tab:blue', alpha=0.95, label='hit')
+        # Punti di miss (a r_max)
+        if include_misses and th_miss.size > 0:
+            ax.scatter(th_miss, rr_miss, s=8, c='tab:gray', alpha=0.6, label='miss (r_max)')
+        ax.set_xlabel("θ [rad]")
+        ax.set_ylabel("r [m]")
+        ax.grid(True, alpha=0.25)
+        ax.set_title(f"r(θ) – {title} – t={float(k)*float(dt):.2f} s")
+        # Limiti y: 0..r_max con piccolo margine
+        y_max = float(lidar.r_max)
+        ax.set_ylim(-0.02 * y_max, 1.02 * y_max)
+        # Limiti x: copri tutto lo span del sensore
+        ax.set_xlim(-half - 1e-3, half + 1e-3)
+        # Legenda se almeno una serie è presente
+        if (th_hit.size > 0) or (include_misses and th_miss.size > 0):
+            ax.legend(loc='upper right', framealpha=0.85, fontsize=8)
+        out_path = out_dir / f"{_slugify(title)}_polar_t{float(k)*float(dt):.2f}s_{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"
+        fig.savefig(out_path, dpi=120, bbox_inches='tight')
+        plt.close(fig)
+

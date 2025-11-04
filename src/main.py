@@ -224,6 +224,8 @@ def main():
     # Salva scansioni (solo punti) con intervallo regolabile
     for hist, title, env, lid in zip(histories, titles, envs, lidars):
         visualizer.save_lidar_scans_images(hist, title, lid, env, dt, interval_s=float(args.scan_interval), fit_to='environment')
+        # Salva anche i grafici r(θ) delle stesse scansioni (inclusi i miss a r_max in grigio)
+        visualizer.save_lidar_polar_images(hist, title, lid, env, dt, interval_s=float(args.scan_interval), include_misses=True)
 
     # Calcola collisioni via LiDAR solo se richiesto
     stop_indices = [None] * len(histories)
