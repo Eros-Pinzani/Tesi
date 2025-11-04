@@ -282,7 +282,8 @@ def setup_environments_per_trajectory(histories: List[np.ndarray], titles: List[
         elif idx == 1:  # Rettilinea (v variabile)
             _place_polygon_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.18, 0.70, 0.18, 0.12, -20.0, 'L')
             _place_circle_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.46, 0.26, 0.05)
-            _place_wall_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.70, 0.56, 0.82, 0.62, 0.03)
+            # Sposta il muro rettangolare a destra più in alto per evitare collisioni con la traiettoria
+            _place_wall_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.70, 0.74, 0.82, 0.80, 0.03)
         elif idx == 2:  # Circolare (v costante)
             _place_circle_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.14, 0.54, 0.06)
             _place_polygon_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.50, 0.14, 0.18, 0.12, 30.0, 'triangle')

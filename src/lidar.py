@@ -60,3 +60,28 @@ class Lidar:
         if return_ranges:
             return points, ranges
         return points
+
+    def scan_hits(self, robot_state, env, frame: str = 'world'):
+        """Ritorna SOLO i punti di impatto reali (escludendo i raggi a r_max) come array Nx2.
+
+        - frame='world': punti in coordinate mondo (default, come scan())
+          frame='local': punti nel frame locale del LiDAR (origine al sensore, asse x in avanti),
+                        ottenuti ruotando di -(theta+angle_offset) e traslando di -(x,y).
+        """
+        pts, ranges = self.scan(robot_state, env, return_ranges=True)
+        # Filtra solo gli hit reali (distanze < r_max)
+        mask_hits = np.asarray(ranges) < float(self.r_max) - 1e-12
+        hit_pts = np.asarray(pts)[mask_hits]
+        if frame == 'world':
+            return hit_pts
+        if frame == 'local':
+            # Trasforma da mondo a frame sensore locale
+            x, y, theta = map(float, robot_state)
+            ca = np.cos(-(theta + float(self.angle_offset)))
+            sa = np.sin(-(theta + float(self.angle_offset)))
+            dx = hit_pts[:, 0] - x
+            dy = hit_pts[:, 1] - y
+            x_local = ca * dx - sa * dy
+            y_local = sa * dx + ca * dy
+            return np.stack([x_local, y_local], axis=1)
+        raise ValueError("frame deve essere 'world' o 'local'")

@@ -9,6 +9,7 @@ import numpy as np  # per calcolare bounds dalle traiettorie
 from typing import List, Optional, Tuple
 from environment_presets import setup_environments_per_trajectory
 from lidar import Lidar  # sensore LiDAR
+import argparse
 
 
 def build_simulator() -> Simulator:
@@ -120,6 +121,13 @@ def _build_lidars_for_cases(envs: List[Environment], titles: List[str]) -> List[
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Simulatore traiettorie + salvatore immagini")
+    parser.add_argument("--skip-collision", action="store_true", help="Salta il calcolo collisioni per avvio piu' rapido")
+    parser.add_argument("--skip-viewer", action="store_true", help="Non aprire il viewer interattivo")
+    parser.add_argument("--scan-interval", type=float, default=2.0, help="Intervallo tra scansioni LiDAR salvate [s]")
+    parser.add_argument("--viewer-lidar-every", type=int, default=4, help="Aggiorna LiDAR nel viewer ogni N frame (default 4)")
+    args = parser.parse_args()
+
     dt = 0.05       # Passo temporale di integrazione (Eulero)
 
     # Parametri base di riferimento
@@ -207,40 +215,45 @@ def main():
     # Istanzia LiDAR per-caso con portata adattiva
     lidars = _build_lidars_for_cases(envs, titles)
 
-    # Calcola indice e frazione del primo impatto via LiDAR per ogni traiettoria
-    stop_indices: List[Optional[int]] = []
-    stop_fractions: List[Optional[float]] = []
-    for hist, env, lid in zip(histories, envs, lidars):
-        kcol, frac = _first_collision_via_lidar(hist, env, lid, body_length=0.40, body_width=0.20)
-        stop_indices.append(kcol)
-        stop_fractions.append(frac)
-
     # Passi per disegnare la posa del robot (in ordine dei casi)
     show_steps = [80, 80, 40, 40, 120, 120]
 
-    # Salva immagini complete (nessun overlay errore)
+    # Salva subito immagini di traiettoria
     visualizer.save_trajectories_images(histories, titles, show_orient_every=show_steps, environment=envs, fit_to='environment')
 
-    # Salva scansioni ogni 2 secondi per ciascuna traiettoria usando i lidar per-caso
+    # Salva scansioni (solo punti) con intervallo regolabile
     for hist, title, env, lid in zip(histories, titles, envs, lidars):
-        visualizer.save_lidar_scans_images(hist, title, lid, env, dt, interval_s=2.0, fit_to='environment')
+        visualizer.save_lidar_scans_images(hist, title, lid, env, dt, interval_s=float(args.scan_interval), fit_to='environment')
 
-    # Mostra carosello con raggi e stop su collisione (via LiDAR)
-    visualizer.show_trajectories_carousel(
-        histories,
-        titles,
-        show_orient_every=show_steps,
-        save_each=False,
-        commands_list=commands_list,
-        dts=dt,
-        show_info=True,
-        environment=envs,
-        fit_to='environment',
-        stop_indices=stop_indices,
-        stop_fractions=stop_fractions,
-        lidar=lidars,
-        show_lidar=True,
-    )
+    # Calcola collisioni via LiDAR solo se richiesto
+    stop_indices = [None] * len(histories)
+    stop_fractions = [None] * len(histories)
+    if not args.skip_collision:
+        stop_indices = []
+        stop_fractions = []
+        for hist, env, lid in zip(histories, envs, lidars):
+            kcol, frac = _first_collision_via_lidar(hist, env, lid, body_length=0.40, body_width=0.20)
+            stop_indices.append(kcol)
+            stop_fractions.append(frac)
+
+    # Mostra carosello (con raggi) solo se non saltato
+    if not args.skip_viewer:
+        visualizer.show_trajectories_carousel(
+            histories,
+            titles,
+            show_orient_every=show_steps,
+            save_each=False,
+            commands_list=commands_list,
+            dts=dt,
+            show_info=True,
+            environment=envs,
+            fit_to='environment',
+            stop_indices=stop_indices,
+            stop_fractions=stop_fractions,
+            lidar=lidars,
+            show_lidar=True,
+            lidar_every=int(max(1, args.viewer_lidar_every)),
+         )
 
 
 if __name__ == "__main__":
