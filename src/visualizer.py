@@ -33,6 +33,7 @@ from contextlib import suppress  # Ignora eccezioni non critiche in operazioni b
 from matplotlib.artist import Artist  # Tipo base di tutti gli elementi disegnabili (patch, arrow, ecc.)
 from environment import Environment  # Per disegnare confini e ostacoli
 from lidar import Lidar  # Tipo del sensore per visualizzazione raggi
+import shutil  # Per pulire cartelle di output delle immagini
 
 
 # Helper per rimuovere in sicurezza un artista matplotlib (gestisce None ed eccezioni)
@@ -154,6 +155,37 @@ def _slugify(text: str) -> str:
     base = re.sub(r'\s+', '_', base)
     base = re.sub(r'[^a-z0-9_\-]', '', base)
     return base
+
+
+# ----------------------- Pulizia output immagini -----------------------
+
+def cleanup_output_images(*, subfolders: Sequence[str] = ("trajectories", "scans", "scans_polar"), remove_root: bool = False) -> None:
+    """Elimina le immagini generate in precedenza sotto img/ per avere solo gli output dell'ultimo run.
+
+    - subfolders: sottocartelle di img/ da pulire. Di default: trajectories, scans, scans_polar.
+    - remove_root: se True, elimina l'intera cartella img/ e la ricrea vuota.
+    """
+    project_root = Path(__file__).resolve().parents[1]
+    img_dir = project_root / 'img'
+    if not img_dir.exists():
+        return
+    try:
+        if remove_root:
+            shutil.rmtree(img_dir, ignore_errors=True)
+            img_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            for sub in subfolders:
+                target = img_dir / sub
+                if target.exists():
+                    shutil.rmtree(target, ignore_errors=True)
+                    target.mkdir(parents=True, exist_ok=True)
+        print(f"Pulizia immagini completata in: {img_dir}")
+    except Exception as e:
+        # Non bloccare l'esecuzione in caso di problemi di file system
+        print(f"[cleanup_output_images] Avviso: non sono riuscito a pulire completamente {img_dir}: {e}")
+
+
+# ----------------------- Fine pulizia output immagini -----------------------
 
 
 def _robot_scale_from_history(history):
@@ -346,7 +378,7 @@ def _build_info_text(
     info_text = (
         f"t={t_k:.2f} s\n"
         f"v={v_k:.2f} m/s,  ω={w_k:.2f} rad/s\n"
-        f"x={x_k:.2f} m,  y={y_k:.2f} m,  ϑ={th_k:.2f} rad"
+        f"x={x_k:.2f} m,  y={y_k:.2f} m,  α={th_k:.2f} rad"
     )
     return info_text
 
@@ -521,7 +553,7 @@ def show_trajectories_carousel(
             "v: velocità lineare [m/s]\n"
             "ω: velocità angolare [rad/s]\n"
             "x, y: posizione [m]\n"
-            "θ: orientamento [rad]"
+            "α: orientamento [rad]"
         )
         fig.text(
             0.02, 0.96, legend_text,
@@ -884,12 +916,15 @@ def save_lidar_scans_images(
     environment: Optional[Environment],
     dt: float,
     *,
-    interval_s: float = 2.0,
+    interval_s: float = 1.0,
     fit_to: str = 'environment',
+    show_info: bool = True,
 ) -> None:
     """Salva immagini delle scansioni LiDAR a intervalli regolari lungo una singola traiettoria.
 
-    Visualizza gli ostacoli/bounds dell'ambiente come sfondo e, sopra, SOLO i punti di impatto (niente robot, niente raggi).
+    Visualizza gli ostacoli/bounds dell'ambiente come sfondo e, sopra, il robot alla posa corrente
+    e le linee dei raggi che colpiscono (hit). Niente raggi dei miss.
+    Se show_info=True, aggiunge un riquadro con: tempo della scansione e posa (x,y,α).
     """
     if history is None or len(history) == 0:
         return
@@ -939,25 +974,69 @@ def save_lidar_scans_images(
         else:
             hit_points = None
 
-        # Immagine con ostacoli visibili (environment) e SOLO i punti di impatto (nessun robot, nessun raggio)
         fig2, ax2 = plt.subplots(figsize=(7, 7))
         if environment is not None:
             with suppress(Exception):
                 environment.plot(ax=ax2)
-        # Scatter dei soli punti, se presenti
-        if hit_points is not None and len(hit_points) > 0:
-            ax2.scatter(hit_points[:, 0], hit_points[:, 1], s=12, c='tab:red', alpha=0.9, zorder=1)
         # Limiti assi basati sui bounds dell'ambiente se disponibile, altrimenti sui punti
         _set_axes_limits_scan(ax2, environment, hit_points)
-        # Rimuovi ogni elemento di contorno/assi per avere davvero solo i punti
+
+        # Disegna le linee dei raggi SOLO verso i punti di impatto (hit)
+        if hit_points is not None and len(hit_points) > 0:
+            _draw_lidar_rays(ax2, pose, hit_points, ray_color='tab:red', hit_marker_color='tab:red', alpha=0.40)
+
+        # Colori del robot per prima/ultima scansione salvata
+        last_k = ((N - 1) // step_idx) * step_idx
+        is_first = (k == 0)
+        is_last = (k == last_k)
+        body_col = 'green' if is_first else ('red' if is_last else 'tab:blue')
+        center_col = 'green' if is_first else ('red' if is_last else 'orange')
+
+        # Disegna il robot alla posa corrente, con scala coerente all'estensione degli assi
+        try:
+            x0, x1 = ax2.get_xlim(); y0, y1 = ax2.get_ylim()
+            ref = max(float(x1 - x0), float(y1 - y0), 1.0)
+            robot_radius = max(0.02, 0.012 * ref)
+            dir_len = 2.5 * robot_radius
+        except Exception:
+            robot_radius = 0.08
+            dir_len = 2.5 * robot_radius
+        draw_robot(ax2, pose, robot_radius=robot_radius, dir_len=dir_len, color=body_col, arrow_color='orange', center_color=center_col)
+
+        # Rimuovi ogni elemento di contorno/assi e legende per eliminare spazi bianchi
         ax2.set_axis_off()
+        with suppress(Exception):
+            leg = ax2.get_legend()
+            if leg is not None:
+                leg.remove()
+        with suppress(Exception):
+            ax2.margins(0)
+        with suppress(Exception):
+            fig2.subplots_adjust(left=0, right=1, top=1, bottom=0)
+
+        # Overlay informativo opzionale (solo tempo e posa) ancorato agli assi per non espandere il bbox
+        if show_info:
+            t = float(k) * float(dt)
+            x, y, th = map(float, pose)
+            th_deg = (np.degrees(th) + 360.0) % 360.0
+            info_text = (
+                f"t={t:.2f} s\n"
+                f"x={x:.2f} m, y={y:.2f} m, α={th_deg:.0f}°"
+            )
+            ax2.text(
+                0.98, 0.98, info_text,
+                transform=ax2.transAxes,
+                ha='right', va='top', fontsize=9,
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.85, edgecolor='0.7')
+            )
+
         # Salvataggio
         t = float(k) * float(dt)
         filename_base = f"scan_t{t:.2f}s"
         stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
         out_path_pts = out_dir / f"{_slugify(title)}_{filename_base}_points_{stamp}.png"
-        fig2.savefig(out_path_pts, dpi=120, bbox_inches='tight', pad_inches=0.02)
-        print(f"Figura punti-only salvata in: {out_path_pts}")
+        fig2.savefig(out_path_pts, dpi=120, bbox_inches='tight', pad_inches=0.01)
+        print(f"Figura punti+raggi salvata in: {out_path_pts}")
         plt.close(fig2)
 
 
@@ -968,12 +1047,12 @@ def save_lidar_polar_images(
     environment: Optional[Environment],
     dt: float,
     *,
-    interval_s: float = 2.0,
+    interval_s: float = 1.0,
     include_misses: bool = True,
 ) -> None:
     """Salva grafici r(θ) delle scansioni LiDAR lungo una traiettoria.
 
-    - Asse x: θ (angolo relativo del raggio rispetto al frame del LiDAR), in radianti
+    - Asse x: θ (angolo relativo del raggio rispetto al frame del LiDAR), ora in gradi 0..360
     - Asse y: r (distanza misurata), in metri
     - Mostra i colpi reali (hit) e, opzionalmente, anche i miss (raggi a r_max) con colore differente.
     """
@@ -982,9 +1061,10 @@ def save_lidar_polar_images(
     step_idx = max(1, int(round(float(interval_s) / max(1e-9, float(dt)))))
     N = len(history)
 
-    # Precalcolo degli angoli relativi dei raggi (come in Lidar.scan)
+    # Precalcolo degli angoli relativi dei raggi (come in Lidar.scan), convertiti in gradi 0..360
     half = 0.5 * float(lidar.angle_span)
     rel_angles = np.linspace(-half, half, num=lidar.n_rays, endpoint=True)
+    rel_angles_deg = (np.degrees(rel_angles) + 360.0) % 360.0
 
     project_root = Path(__file__).resolve().parents[1]
     out_dir = project_root / 'img' / f"scans_polar/{_slugify(title)}"
@@ -999,9 +1079,9 @@ def save_lidar_polar_images(
         ranges = np.asarray(ranges)
         mask_hit = ranges < float(lidar.r_max) - 1e-12
         mask_miss = ~mask_hit
-        th_hit = rel_angles[mask_hit]
+        th_hit = rel_angles_deg[mask_hit]
         rr_hit = ranges[mask_hit]
-        th_miss = rel_angles[mask_miss]
+        th_miss = rel_angles_deg[mask_miss]
         rr_miss = ranges[mask_miss]
 
         fig, ax = plt.subplots(figsize=(7, 4))
@@ -1011,15 +1091,19 @@ def save_lidar_polar_images(
         # Punti di miss (a r_max)
         if include_misses and th_miss.size > 0:
             ax.scatter(th_miss, rr_miss, s=8, c='tab:gray', alpha=0.6, label='miss (r_max)')
-        ax.set_xlabel("θ [rad]")
+        ax.set_xlabel("θ [°]")
         ax.set_ylabel("r [m]")
         ax.grid(True, alpha=0.25)
         ax.set_title(f"r(θ) – {title} – t={float(k)*float(dt):.2f} s")
         # Limiti y: 0..r_max con piccolo margine
         y_max = float(lidar.r_max)
         ax.set_ylim(-0.02 * y_max, 1.02 * y_max)
-        # Limiti x: copri tutto lo span del sensore
-        ax.set_xlim(-half - 1e-3, half + 1e-3)
+        # Limiti x in gradi: 0..360
+        ax.set_xlim(0.0 - 1e-3, 360.0 + 1e-3)
+        try:
+            ax.set_xticks([0, 60, 120, 180, 240, 300, 360])
+        except Exception:
+            pass
         # Legenda se almeno una serie è presente
         if (th_hit.size > 0) or (include_misses and th_miss.size > 0):
             ax.legend(loc='upper right', framealpha=0.85, fontsize=8)

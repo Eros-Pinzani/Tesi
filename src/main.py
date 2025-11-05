@@ -124,9 +124,15 @@ def main():
     parser = argparse.ArgumentParser(description="Simulatore traiettorie + salvatore immagini")
     parser.add_argument("--skip-collision", action="store_true", help="Salta il calcolo collisioni per avvio piu' rapido")
     parser.add_argument("--skip-viewer", action="store_true", help="Non aprire il viewer interattivo")
-    parser.add_argument("--scan-interval", type=float, default=2.0, help="Intervallo tra scansioni LiDAR salvate [s]")
+    parser.add_argument("--scan-interval", type=float, default=1.0, help="Intervallo tra scansioni LiDAR salvate [s]")
     parser.add_argument("--viewer-lidar-every", type=int, default=4, help="Aggiorna LiDAR nel viewer ogni N frame (default 4)")
     args = parser.parse_args()
+
+    # Pulisci vecchie immagini per evitare accumulo: trajectories, scans, scans_polar
+    try:
+        visualizer.cleanup_output_images(subfolders=("trajectories", "scans", "scans_polar"), remove_root=False)
+    except Exception as e:
+        print(f"[main] Avviso: impossibile pulire cartelle immagini: {e}")
 
     dt = 0.05       # Passo temporale di integrazione (Eulero)
 
