@@ -10,6 +10,7 @@ from typing import List, Optional, Tuple
 from environment_presets import setup_environments_per_trajectory
 from lidar import Lidar  # sensore LiDAR
 import argparse
+from icp import run_icp_over_history  # nuovo: esecuzione ICP su storia
 
 
 def build_simulator() -> Simulator:
@@ -126,6 +127,7 @@ def main():
     parser.add_argument("--skip-viewer", action="store_true", help="Non aprire il viewer interattivo")
     parser.add_argument("--scan-interval", type=float, default=1.0, help="Intervallo tra scansioni LiDAR salvate [s]")
     parser.add_argument("--viewer-lidar-every", type=int, default=4, help="Aggiorna LiDAR nel viewer ogni N frame (default 4)")
+    parser.add_argument("--run-icp", action="store_true", help="Esegui ICP su coppie (k-1,k) in frame locale e stampa confronto init=None vs init=odo")
     args = parser.parse_args()
 
     # Pulisci vecchie immagini per evitare accumulo: trajectories, scans, scans_polar
@@ -262,6 +264,31 @@ def main():
             show_lidar=True,
             lidar_every=int(max(1, args.viewer_lidar_every)),
          )
+
+    # (Opzionale) Esegui ICP in frame locale per confrontare init=None vs init odometrica
+    if args.run_icp:
+        print("\n========== ICP (frame locale) ==========")
+        for idx, (hist, title, env, lid) in enumerate(zip(histories, titles, envs, lidars)):
+            print(f"\nCaso {idx+1}: {title}")
+            icp_results = run_icp_over_history(
+                hist, lid, env,
+                step=1,
+                max_iterations=40,
+                tolerance=1e-5,
+                max_correspondence_distance=0.5,  # soglia NN per ridurre outlier
+                use_scipy=True,
+            )
+            # Stampa un breve sommario su pochi frame (per non esondare)
+            for res in icp_results[0:5]:  # primi 5 passi come anteprima
+                if not res.get('ok', False):
+                    print(f" k={res['k']:4d}: punti insufficienti (src={res.get('n_src')}, tgt={res.get('n_tgt')})")
+                    continue
+                rn = res['none']; ro = res['odo']
+                print(
+                    f" k={res['k']:4d}: rmse_none={rn['rmse']:.4f}, rmse_odo={ro['rmse']:.4f}, "
+                    f"iters_none={rn['iterations']}, iters_odo={ro['iterations']}, "
+                    f"Δα_none={rn['alpha']:.4f} rad, Δα_odo={ro['alpha']:.4f} rad"
+                )
 
 
 if __name__ == "__main__":
