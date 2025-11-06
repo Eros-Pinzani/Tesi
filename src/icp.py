@@ -100,14 +100,20 @@ def icp_point_to_point(
     max_iterations: int = 50,
     tolerance: float = 1e-5,
     max_correspondence_distance: Optional[float] = None,
+    trim_fraction: Optional[float] = None,
     use_scipy: bool = True,
     verbose: bool = False,
+    # Nuovi parametri di damping
+    damping_enabled: bool = True,
+    angle_thresh_deg: float = 7.5,
+    struct_ratio_thresh: float = 0.03,
+    damp_factor: float = 0.5,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[Dict], np.ndarray]:
     """ICP point-to-point 2D.
 
     Ritorna: (R_finale, t_finale, source_trasformata, history, errors)
     - history: lista di dict con chiavi {'iter', 'R', 't', 'mean_error', 'n_corr'}
-    - errors: np.array dei mean_error per iterazione
+    - errors: np.array degli RMSE per iterazione (vero RMSE)
     """
     assert source.ndim == 2 and source.shape[1] == 2 and target.ndim == 2 and target.shape[1] == 2
     src = np.asarray(source, dtype=float).copy()
@@ -127,27 +133,71 @@ def icp_point_to_point(
 
     for it in range(int(max_iterations)):
         idxs, dists, mask = nearest_neighbors(src, dst, max_correspondence_distance, use_scipy=use_scipy)
+
+        # Trimming: tiene solo una frazione delle corrispondenze più vicine
+        if mask.any() and trim_fraction is not None and 0.0 < float(trim_fraction) < 1.0:
+            valid_d = dists[mask]
+            if len(valid_d) >= 6:
+                thr = float(np.quantile(valid_d, float(trim_fraction)))
+                mask = mask & (dists <= thr)
+
         valid_src = src[mask]
         valid_dst = dst[idxs[mask]]
         if len(valid_src) < 3:
             if verbose:
                 print(f"[ICP] Iter {it}: corrispondenze insufficienti ({len(valid_src)}). Stop.")
             break
-        R_delta, t_delta = best_fit_transform_2d(valid_src, valid_dst)
+
+        # Calcola trasformazione ottima via SVD (come best_fit_transform_2d), con possibilità di damping dell'angolo
+        centroid_A = valid_src.mean(axis=0)
+        centroid_B = valid_dst.mean(axis=0)
+        AA = valid_src - centroid_A
+        BB = valid_dst - centroid_B
+        H = AA.T @ BB
+        U, S, Vt = np.linalg.svd(H)
+        R_delta_raw = Vt.T @ U.T
+        if np.linalg.det(R_delta_raw) < 0:
+            Vt[1, :] *= -1
+            R_delta_raw = Vt.T @ U.T
+        t_delta_raw = centroid_B - R_delta_raw @ centroid_A
+
+        # Damping opzionale della rotazione in condizioni degeneri
+        R_delta = R_delta_raw
+        t_delta = t_delta_raw
+        if damping_enabled:
+            s_max = float(np.max(S)) if S.size > 0 else 1.0
+            s_min = float(np.min(S)) if S.size > 0 else 1.0
+            struct_ratio = (s_min / s_max) if s_max > 1e-12 else 1.0
+            angle_raw = float(np.arctan2(R_delta_raw[1, 0], R_delta_raw[0, 0]))
+            angle_thresh = float(np.deg2rad(angle_thresh_deg))
+            if struct_ratio < float(struct_ratio_thresh) and abs(angle_raw) > angle_thresh:
+                # Fattore dinamico: se struct_ratio è vicino alla soglia -> meno damping (più vicino a 1)
+                r = struct_ratio / float(struct_ratio_thresh)
+                r = max(0.0, min(1.0, r))
+                dyn_factor = float(damp_factor) + (1.0 - float(damp_factor)) * r
+                angle_new = angle_raw * dyn_factor
+                R_delta = rot2d(angle_new)
+                t_delta = centroid_B - R_delta @ centroid_A
+
         # Aggiorna i punti src e accumula la trasformazione
         src = (R_delta @ src.T).T + t_delta.reshape(1, 2)
         total_t = R_delta @ total_t + t_delta
         total_R = R_delta @ total_R
 
-        mean_error = float(np.mean(dists[mask])) if mask.any() else float('inf')
-        history.append({'iter': it, 'R': R_delta, 't': t_delta, 'mean_error': mean_error, 'n_corr': int(mask.sum())})
+        # VERO RMSE sulle corrispondenze valide
+        d_valid = dists[mask]
+        rmse = float(np.sqrt(np.mean(d_valid * d_valid))) if d_valid.size > 0 else float('inf')
+        history.append({'iter': it, 'R': R_delta, 't': t_delta, 'mean_error': rmse, 'n_corr': int(mask.sum())})
         if verbose:
-            print(f"[ICP] Iter {it}: mean_error={mean_error:.6f}, n_corr={int(mask.sum())}")
-        if prev_error is not None and abs(prev_error - mean_error) < float(tolerance):
+            extra = ''
+            if 'S' in locals():
+                extra = f", struct_ratio={(float(np.min(S))/float(np.max(S))) if (S.size>0 and float(np.max(S))>1e-12) else 1.0:.3f}"
+            print(f"[ICP] Iter {it}: rmse={rmse:.6f}, n_corr={int(mask.sum())}{extra}")
+        if prev_error is not None and abs(prev_error - rmse) < float(tolerance):
             if verbose:
-                print(f"[ICP] Converged at iter {it} (Δerror < tol).")
+                print(f"[ICP] Converged at iter {it} (Δrmse < tol).")
             break
-        prev_error = mean_error
+        prev_error = rmse
 
     source_transformed = (total_R @ np.asarray(source).T).T + total_t.reshape(1, 2)
     errors = np.array([h['mean_error'] for h in history], dtype=float)
@@ -166,6 +216,11 @@ def run_icp_pair_local(
     tolerance: float = 1e-5,
     max_correspondence_distance: Optional[float] = None,
     use_scipy: bool = True,
+    trim_fraction: Optional[float] = None,
+    damping_enabled: bool = True,
+    angle_thresh_deg: float = 7.5,
+    struct_ratio_thresh: float = 0.03,
+    damp_factor: float = 0.5,
 ) -> Dict:
     """Esegue ICP tra le scansioni LiDAR alle pose consecutive, entrambe in frame locale del robot.
 
@@ -190,8 +245,13 @@ def run_icp_pair_local(
         max_iterations=max_iterations,
         tolerance=tolerance,
         max_correspondence_distance=max_correspondence_distance,
+        trim_fraction=trim_fraction,
         use_scipy=use_scipy,
         verbose=False,
+        damping_enabled=damping_enabled,
+        angle_thresh_deg=angle_thresh_deg,
+        struct_ratio_thresh=struct_ratio_thresh,
+        damp_factor=damp_factor,
     )
 
     # (B) ICP con inizializzazione odometrica (curr->prev nel frame locale di prev)
@@ -202,25 +262,37 @@ def run_icp_pair_local(
         max_iterations=max_iterations,
         tolerance=tolerance,
         max_correspondence_distance=max_correspondence_distance,
+        trim_fraction=trim_fraction,
         use_scipy=use_scipy,
         verbose=False,
+        damping_enabled=damping_enabled,
+        angle_thresh_deg=angle_thresh_deg,
+        struct_ratio_thresh=struct_ratio_thresh,
+        damp_factor=damp_factor,
     )
 
     def _theta_from_R(R: np.ndarray) -> float:
         return float(np.arctan2(R[1, 0], R[0, 0]))
+
+    def _deg(rad: float) -> float:
+        return float(rad * 180.0 / np.pi)
 
     out = {
         'ok': True,
         'n_src': int(len(src_local)),
         'n_tgt': int(len(tgt_local)),
         'none': {
-            'R': R_none, 't': t_none, 'alpha': _theta_from_R(R_none),
+            'R': R_none, 't': t_none,
+            'alpha_rad': _theta_from_R(R_none),
+            'alpha_deg': _deg(_theta_from_R(R_none)),
             'rmse': float(errs_none[-1]) if errs_none.size > 0 else float('inf'),
             'iterations': int(len(hist_none)),
             'n_corr_last': int(hist_none[-1]['n_corr']) if len(hist_none) > 0 else 0,
         },
         'odo': {
-            'R': R_odo, 't': t_odo, 'alpha': _theta_from_R(R_odo),
+            'R': R_odo, 't': t_odo,
+            'alpha_rad': _theta_from_R(R_odo),
+            'alpha_deg': _deg(_theta_from_R(R_odo)),
             'rmse': float(errs_odo[-1]) if errs_odo.size > 0 else float('inf'),
             'iterations': int(len(hist_odo)),
             'n_corr_last': int(hist_odo[-1]['n_corr']) if len(hist_odo) > 0 else 0,
@@ -239,6 +311,11 @@ def run_icp_over_history(
     tolerance: float = 1e-5,
     max_correspondence_distance: Optional[float] = None,
     use_scipy: bool = True,
+    trim_fraction: Optional[float] = None,
+    damping_enabled: bool = True,
+    angle_thresh_deg: float = 7.5,
+    struct_ratio_thresh: float = 0.03,
+    damp_factor: float = 0.5,
 ) -> List[Dict]:
     """Esegue ICP su coppie (k-1,k) a passi 'step' lungo la storia.
     Ritorna una lista di risultati (dict) per ciascuna coppia.
@@ -252,6 +329,11 @@ def run_icp_over_history(
             tolerance=tolerance,
             max_correspondence_distance=max_correspondence_distance,
             use_scipy=use_scipy,
+            trim_fraction=trim_fraction,
+            damping_enabled=damping_enabled,
+            angle_thresh_deg=angle_thresh_deg,
+            struct_ratio_thresh=struct_ratio_thresh,
+            damp_factor=damp_factor,
         )
         res['k'] = int(k)
         results.append(res)

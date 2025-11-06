@@ -105,8 +105,10 @@ def _build_lidars_for_cases(envs: List[Environment], titles: List[str]) -> List[
     for idx, (env, title) in enumerate(zip(envs, titles)):
         diag = _env_bounds_diag(env)
         # Fattori per caso: più conservativi sui rettilinei
-        if idx in (0, 1):  # rettilinei
-            factor = 0.35
+        if idx == 0:  # Rettilinea v costante: aumenta r_max e n_rays per avere più hit
+            factor = 0.55
+        elif idx == 1:  # Rettilinea v variabile
+            factor = 0.40
         elif idx in (2, 3):  # circolari
             factor = 0.50
         elif idx == 4:  # otto
@@ -114,8 +116,13 @@ def _build_lidars_for_cases(envs: List[Environment], titles: List[str]) -> List[
         else:  # random walk
             factor = 0.55
         r_max = max(1.0, factor * diag)
-        # Numero raggi: meno densi per rettilinei per rendere meno capillare
-        n_rays = 160 if idx in (0, 1) else 240
+        # Numero raggi: più densi per il caso 0
+        if idx == 0:
+            n_rays = 240
+        elif idx == 1:
+            n_rays = 180
+        else:
+            n_rays = 240
         lidar = Lidar(n_rays=n_rays, angle_span=2*math.pi, r_max=r_max, angle_offset=0.0, add_noise=False)
         lidars.append(lidar)
     return lidars
@@ -268,6 +275,12 @@ def main():
     # (Opzionale) Esegui ICP in frame locale per confrontare init=None vs init odometrica
     if args.run_icp:
         print("\n========== ICP (frame locale) ==========")
+        # Parametri ICP uniformi per tutti i casi (damping meno invasivo)
+        trim_fraction = 0.7
+        damping_enabled = True
+        angle_thresh_deg = 10.0   # prima 7.5
+        struct_ratio_thresh = 0.02  # prima 0.03: scatta meno spesso
+        damp_factor = 0.7        # prima 0.5: riduzione più blanda
         for idx, (hist, title, env, lid) in enumerate(zip(histories, titles, envs, lidars)):
             print(f"\nCaso {idx+1}: {title}")
             icp_results = run_icp_over_history(
@@ -275,11 +288,15 @@ def main():
                 step=1,
                 max_iterations=40,
                 tolerance=1e-5,
-                max_correspondence_distance=0.5,  # soglia NN per ridurre outlier
+                max_correspondence_distance=0.5,
                 use_scipy=True,
+                trim_fraction=trim_fraction,
+                damping_enabled=damping_enabled,
+                angle_thresh_deg=angle_thresh_deg,
+                struct_ratio_thresh=struct_ratio_thresh,
+                damp_factor=damp_factor,
             )
-            # Stampa un breve sommario su pochi frame (per non esondare)
-            for res in icp_results[0:5]:  # primi 5 passi come anteprima
+            for res in icp_results[0:5]:
                 if not res.get('ok', False):
                     print(f" k={res['k']:4d}: punti insufficienti (src={res.get('n_src')}, tgt={res.get('n_tgt')})")
                     continue
@@ -287,7 +304,7 @@ def main():
                 print(
                     f" k={res['k']:4d}: rmse_none={rn['rmse']:.4f}, rmse_odo={ro['rmse']:.4f}, "
                     f"iters_none={rn['iterations']}, iters_odo={ro['iterations']}, "
-                    f"Δα_none={rn['alpha']:.4f} rad, Δα_odo={ro['alpha']:.4f} rad"
+                    f"Δα_none={rn['alpha_deg']:.4f} deg, Δα_odo={ro['alpha_deg']:.4f} deg"
                 )
 
 

@@ -274,11 +274,205 @@ def setup_environments_per_trajectory(histories: List[np.ndarray], titles: List[
                 (0.82, 0.32, 0.12, 0.12),
             ]
 
-        # Sostituisco la logica che inseriva rettangoli con forme miste per traiettoria
-        if idx == 0:  # Rettilinea (v costante)
-            _place_circle_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.22, 0.28, 0.06)
-            _place_polygon_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.58, 0.70, 0.16, 0.12, 15.0, 'triangle')
-            _place_wall_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.78, 0.30, 0.92, 0.46, 0.04)
+        # Sostituisco la logica di posizionamento SOLO per il caso rettilineo v costante (idx==0)
+        if idx == 0:
+            # Direzione globale della traiettoria (tangente) e normale
+            try:
+                length = float(path_line.length)
+            except Exception:
+                length = 0.0
+            # Fallback: usa delta tra primo e ultimo punto
+            if length <= 1e-6:
+                xs = hist[:, 0]; ys = hist[:, 1]
+                p0 = np.array([float(xs[0]), float(ys[0])], dtype=float)
+                p1 = np.array([float(xs[-1]), float(ys[-1])], dtype=float)
+                v = p1 - p0
+                vn = float(np.hypot(v[0], v[1])) or 1.0
+                t_hat = v / vn
+                n_hat = np.array([-t_hat[1], t_hat[0]], dtype=float)
+                # Centro percorso
+                cx = 0.5 * (float(np.min(xs)) + float(np.max(xs)))
+                cy = 0.5 * (float(np.min(ys)) + float(np.max(ys)))
+                def _interp_point(alpha: float) -> np.ndarray:
+                    return np.array([cx, cy], dtype=float) + (alpha - 0.5) * vn * t_hat
+            else:
+                def _as_np(pt):
+                    return np.array([float(pt.x), float(pt.y)], dtype=float)
+                p0 = _as_np(path_line.interpolate(0.0))
+                p1 = _as_np(path_line.interpolate(length))
+                v = p1 - p0
+                vn = float(np.hypot(v[0], v[1])) or 1.0
+                t_hat = v / vn
+                n_hat = np.array([-t_hat[1], t_hat[0]], dtype=float)
+                def _interp_point(alpha: float) -> np.ndarray:
+                    s = float(np.clip(alpha, 0.0, 1.0)) * length
+                    pt = path_line.interpolate(s)
+                    return np.array([float(pt.x), float(pt.y)], dtype=float)
+
+            # Offset laterale: appena oltre il corridoio di sicurezza
+            span = max(bx1 - bx0, by1 - by0)
+            d_off = float(clearance + 0.06 * span)  # prima 0.10*span: avvicina gli ostacoli per entrare in r_max
+            safe_margin = 0.02 * float(span)
+
+            # Clamp punto ai bounds
+            def _clamp_pt(pt: np.ndarray) -> np.ndarray:
+                return np.array([
+                    float(np.clip(pt[0], bx0 + safe_margin, bx1 - safe_margin)),
+                    float(np.clip(pt[1], by0 + safe_margin, by1 - safe_margin))
+                ], dtype=float)
+
+            # Helper: aggiungi un cerchio riducendo il raggio finché sta nei bounds e non tocca il buffer
+            def _add_circle_safe(cx: float, cy: float, r_des: float) -> None:
+                from shapely.geometry import Point as ShapelyPoint
+                cx = float(np.clip(cx, bx0 + safe_margin, bx1 - safe_margin))
+                cy = float(np.clip(cy, by0 + safe_margin, by1 - safe_margin))
+                # r massimo consentito dai bounds (meno margine)
+                r_max_bounds = float(min(cx - bx0, bx1 - cx, cy - by0, by1 - cy) - safe_margin)
+                r = max(0.01 * span, min(r_des, r_max_bounds))
+                # Riduci se interseca il corridoio o supera bounds
+                it = 0
+                while it < 12:
+                    geom = ShapelyPoint(cx, cy).buffer(r, resolution=32)
+                    inside = True
+                    try:
+                        inside = env.bounds.contains(geom)  # type: ignore[union-attr]
+                    except Exception:
+                        inside = True
+                    if inside and (not geom.intersects(path_buffer)):
+                        env.add_circle(cx, cy, r)
+                        return
+                    r *= 0.86
+                    if r < 0.02 * span:
+                        break
+                    it += 1
+                # Se fallisce, non aggiunge il cerchio
+                return
+
+            # Helper: aggiungi un muro corto perpendicolare riducendo spessore e lunghezza se serve
+            def _add_wall_safe(a: np.ndarray, b: np.ndarray, t_des: float) -> None:
+                from shapely.geometry import LineString as ShapelyLine
+                a = _clamp_pt(a); b = _clamp_pt(b)
+                L = float(np.linalg.norm(b - a))
+                if L < 1e-6:
+                    return
+                t = float(t_des)
+                scale = 1.0
+                it = 0
+                while it < 14:
+                    aa = a + 0.5 * (1.0 - scale) * (b - a)
+                    bb = b - 0.5 * (1.0 - scale) * (b - a)
+                    seg = ShapelyLine([(float(aa[0]), float(aa[1])), (float(bb[0]), float(bb[1]))])
+                    geom = seg.buffer(0.5 * t, cap_style='flat', join_style='bevel')
+                    inside = True
+                    try:
+                        inside = env.bounds.contains(geom)  # type: ignore[union-attr]
+                    except Exception:
+                        inside = True
+                    if inside and (not geom.intersects(path_buffer)):
+                        env.add_wall(float(aa[0]), float(aa[1]), float(bb[0]), float(bb[1]), thickness=float(t))
+                        return
+                    # Shrink progressivo
+                    if (it % 2) == 0:
+                        t *= 0.85
+                    else:
+                        scale *= 0.88
+                    if t < 0.015 * span or scale < 0.40:
+                        break
+                    it += 1
+                return
+
+            # Helper: aggiungi un rettangolo ruotato in modo safe
+            def _add_rot_rect_safe(cx: float, cy: float, w_des: float, h_des: float, angle_deg: float) -> None:
+                from shapely.geometry import Polygon as _Poly
+                cx = float(np.clip(cx, bx0 + safe_margin, bx1 - safe_margin))
+                cy = float(np.clip(cy, by0 + safe_margin, by1 - safe_margin))
+                w = float(w_des); h = float(h_des)
+                it = 0
+                while it < 14 and w > 0.02*span and h > 0.02*span:
+                    local = [(-w/2, -h/2), (w/2, -h/2), (w/2, h/2), (-w/2, h/2)]
+                    world = _translate_points(_rotate_points(local, angle_deg), cx, cy)
+                    geom = _Poly(world)
+                    inside = True
+                    try:
+                        inside = env.bounds.contains(geom)  # type: ignore[union-attr]
+                    except Exception:
+                        inside = True
+                    if inside and (not geom.intersects(path_buffer)) and (not _intersects_any(env, geom)):
+                        env.add_polygon(world)
+                        return
+                    w *= 0.88
+                    h *= 0.88
+                    it += 1
+                return
+
+            # Helper: aggiungi un triangolo in modo safe
+            def _add_triangle_safe(cx: float, cy: float, w_des: float, h_des: float, angle_deg: float) -> None:
+                from shapely.geometry import Polygon as _Poly
+                cx = float(np.clip(cx, bx0 + safe_margin, bx1 - safe_margin))
+                cy = float(np.clip(cy, by0 + safe_margin, by1 - safe_margin))
+                W = float(w_des); H = float(h_des)
+                it = 0
+                while it < 14 and W > 0.02*span and H > 0.02*span:
+                    local = _poly_vertices('triangle', W, H)
+                    world = _translate_points(_rotate_points(local, angle_deg), cx, cy)
+                    geom = _Poly(world)
+                    inside = True
+                    try:
+                        inside = env.bounds.contains(geom)  # type: ignore[union-attr]
+                    except Exception:
+                        inside = True
+                    if inside and (not geom.intersects(path_buffer)) and (not _intersects_any(env, geom)):
+                        env.add_polygon(world)
+                        return
+                    W *= 0.88
+                    H *= 0.88
+                    it += 1
+                return
+
+            # Due cerchi laterali a posizioni diverse lungo il percorso
+            c0 = _interp_point(0.12)
+            c1 = _interp_point(0.35)
+            c2 = _interp_point(0.65)
+            # Ostacolo extra vicino all'inizio, lato destro (sotto la retta se y cresce verso l'alto)
+            d0 = float(clearance + 0.04 * span)
+            c0R = _clamp_pt(c0 - d0 * n_hat)
+            r0 = float(min(0.65 * clearance, 0.05 * span))
+            _add_circle_safe(c0R[0], c0R[1], r0)
+
+            c1L = _clamp_pt(c1 + d_off * n_hat)   # lato sinistro
+            c2R = _clamp_pt(c2 - d_off * n_hat)   # lato destro
+            r1 = float(min(0.75 * clearance, 0.06 * span))
+            r2 = float(min(0.75 * clearance, 0.06 * span))
+            _add_circle_safe(c1L[0], c1L[1], r1)
+            _add_circle_safe(c2R[0], c2R[1], r2)
+
+            # Un muro corto perpendicolare su un lato, per vincolare ulteriormente la rotazione
+            c3 = _interp_point(0.50) + 1.10 * d_off * n_hat
+            L = float(max(0.40, 0.18 * span))
+            t = float(max(0.04, 0.02 * span))
+            a = _clamp_pt(c3 - 0.5 * L * n_hat)
+            b = _clamp_pt(c3 + 0.5 * L * n_hat)
+            _add_wall_safe(a, b, t)
+
+            # Aggiunta ostacoli NON circolari extra: triangolo (lato sinistro) e rettangolo ruotato (lato destro)
+            cT = _interp_point(0.22) + 0.90 * d_off * n_hat
+            _add_triangle_safe(cT[0], cT[1], 0.10 * span, 0.12 * span, angle_deg=15.0)
+
+            cR = _interp_point(0.80) - 0.90 * d_off * n_hat
+            _add_rot_rect_safe(cR[0], cR[1], 0.18 * span, 0.08 * span, angle_deg=-20.0)
+
+            # Controparti simmetriche per bilanciamento
+            cT_sym = _interp_point(0.22) - 0.90 * d_off * n_hat  # triangolo lato destro
+            _add_triangle_safe(cT_sym[0], cT_sym[1], 0.10 * span, 0.12 * span, angle_deg=-15.0)
+
+            cL_sym = _interp_point(0.80) + 0.90 * d_off * n_hat  # rettangolo ruotato lato sinistro
+            _add_rot_rect_safe(cL_sym[0], cL_sym[1], 0.18 * span, 0.08 * span, angle_deg=20.0)
+
+            # Muro perpendicolare speculare sull'altro lato
+            c3_sym = _interp_point(0.50) - 1.10 * d_off * n_hat
+            a_sym = _clamp_pt(c3_sym - 0.5 * L * n_hat)
+            b_sym = _clamp_pt(c3_sym + 0.5 * L * n_hat)
+            _add_wall_safe(a_sym, b_sym, t)
         elif idx == 1:  # Rettilinea (v variabile)
             _place_polygon_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.18, 0.70, 0.18, 0.12, -20.0, 'L')
             _place_circle_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.46, 0.26, 0.05)
