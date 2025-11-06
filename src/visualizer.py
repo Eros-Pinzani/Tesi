@@ -447,7 +447,6 @@ def plot_trajectory(history, show_orient_every=20, title="Traiettoria del robot"
     _plot_static_trajectory_on_axes(ax, history, step=step, title=title, include_title=True, include_axis_labels=True, environment=environment, fit_to=fit_to)
     out_path = Path(save_path) if save_path else _default_save_path(title, subfolder='trajectories')
     fig.savefig(out_path, dpi=120, bbox_inches='tight')
-    print(f"Figura salvata in: {out_path}")
     plt.show()
 
 
@@ -724,7 +723,6 @@ def show_trajectories_carousel(
             _plot_static_trajectory_on_axes(ax_save, hist, step=step, title=title, include_title=True, include_axis_labels=True, draw_glyphs=True, environment=env_cur, fit_to=fit_to)
             out_path = _default_save_path(title, subfolder='trajectories')
             fig_save.savefig(out_path, dpi=120, bbox_inches='tight')
-            print(f"Figura salvata in: {out_path}")
             plt.close(fig_save)
 
     def _stop_if_collision_reached(next_k: int) -> bool:
@@ -868,6 +866,8 @@ def save_trajectories_images(
     environment: Optional[Union[Environment, Sequence[Optional[Environment]]]] = None,
     fit_to: str = 'trajectory',
     error_messages: Optional[Sequence[Optional[str]]] = None,
+    progress_cb: Optional[callable] = None,
+    quiet: bool = True,
 ):
     """Salva PNG per ciascuna traiettoria, con simboli del robot (inclusi start verde, intermedi blu e end rosso).
 
@@ -876,8 +876,11 @@ def save_trajectories_images(
     - show_orient_every: passo con cui disegnare i simboli lungo la traiettoria (può essere lista per-caso)
     - environment: singolo Environment o lista per-caso; se fornito, disegna bounds/ostacoli sullo sfondo
     - fit_to: 'trajectory' o 'environment'
+    - progress_cb: funzione opzionale (cur, total) chiamata dopo ogni salvataggio
+    - quiet: True per non stampare i path dei file salvati
     """
     assert len(histories) == len(titles) and len(histories) > 0, "Liste vuote o di diversa lunghezza"
+    total = len(histories)
     if isinstance(show_orient_every, (list, tuple, np.ndarray)):
         assert len(show_orient_every) == len(histories), "show_orient_every deve avere stessa lunghezza di histories"
 
@@ -894,10 +897,10 @@ def save_trajectories_images(
             return environment[idx]
         return environment
 
-    for i, (hist, title_str) in enumerate(zip(histories, titles)):
+    for i, (hist, title_str) in enumerate(zip(histories, titles), start=1):
         fig, ax = plt.subplots(figsize=(7, 7))
-        step = _resolve_show_every(i)
-        env_cur = _resolve_env(i)
+        step = _resolve_show_every(i - 1)
+        env_cur = _resolve_env(i - 1)
         # Disegno statico completo con "fantasmi"
         _plot_static_trajectory_on_axes(
             ax, hist, step=step, title=None, include_title=False, include_axis_labels=False,
@@ -905,7 +908,9 @@ def save_trajectories_images(
         )
         out_path = _default_save_path(title_str, subfolder='trajectories')
         fig.savefig(out_path, dpi=120, bbox_inches='tight')
-        print(f"Figura salvata in: {out_path}")
+        if callable(progress_cb):
+            with suppress(Exception):
+                progress_cb(i, total)
         plt.close(fig)
 
 
@@ -919,6 +924,8 @@ def save_lidar_scans_images(
     interval_s: float = 1.0,
     fit_to: str = 'environment',
     show_info: bool = True,
+    progress_cb: Optional[callable] = None,
+    quiet: bool = True,
 ) -> None:
     """Salva immagini delle scansioni LiDAR a intervalli regolari lungo una singola traiettoria.
 
@@ -931,6 +938,7 @@ def save_lidar_scans_images(
 
     step_idx = max(1, int(round(float(interval_s) / max(1e-9, float(dt)))))
     N = len(history)
+    total = len(range(0, N, step_idx))
     case_folder = f"scans/{_slugify(title)}"
 
     def _set_axes_limits_scan(ax, env: Optional[Environment], pts: Optional[np.ndarray]):
@@ -962,7 +970,7 @@ def save_lidar_scans_images(
     out_dir = project_root / 'img' / case_folder
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    for k in range(0, N, step_idx):
+    for idx_k, k in enumerate(range(0, N, step_idx), start=1):
         pose = history[k]
         try:
             scan_pts, ranges = lidar.scan(pose, environment, return_ranges=True) if environment is not None else (None, None)
@@ -1036,7 +1044,9 @@ def save_lidar_scans_images(
         stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
         out_path_pts = out_dir / f"{_slugify(title)}_{filename_base}_points_{stamp}.png"
         fig2.savefig(out_path_pts, dpi=120, bbox_inches='tight', pad_inches=0.01)
-        print(f"Figura punti+raggi salvata in: {out_path_pts}")
+        if callable(progress_cb):
+            with suppress(Exception):
+                progress_cb(idx_k, total)
         plt.close(fig2)
 
 
@@ -1049,6 +1059,8 @@ def save_lidar_polar_images(
     *,
     interval_s: float = 1.0,
     include_misses: bool = True,
+    progress_cb: Optional[callable] = None,
+    quiet: bool = True,
 ) -> None:
     """Salva grafici r(θ) delle scansioni LiDAR lungo una traiettoria.
 
@@ -1060,6 +1072,7 @@ def save_lidar_polar_images(
         return
     step_idx = max(1, int(round(float(interval_s) / max(1e-9, float(dt)))))
     N = len(history)
+    total = len(range(0, N, step_idx))
 
     # Precalcolo degli angoli relativi dei raggi (come in Lidar.scan), convertiti in gradi 0..360
     half = 0.5 * float(lidar.angle_span)
@@ -1070,7 +1083,7 @@ def save_lidar_polar_images(
     out_dir = project_root / 'img' / f"scans_polar/{_slugify(title)}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    for k in range(0, N, step_idx):
+    for idx_k, k in enumerate(range(0, N, step_idx), start=1):
         pose = history[k]
         try:
             _pts, ranges = lidar.scan(pose, environment, return_ranges=True)
@@ -1109,5 +1122,8 @@ def save_lidar_polar_images(
             ax.legend(loc='upper right', framealpha=0.85, fontsize=8)
         out_path = out_dir / f"{_slugify(title)}_polar_t{float(k)*float(dt):.2f}s_{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"
         fig.savefig(out_path, dpi=120, bbox_inches='tight')
+        if callable(progress_cb):
+            with suppress(Exception):
+                progress_cb(idx_k, total)
         plt.close(fig)
 

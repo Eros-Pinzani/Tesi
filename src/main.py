@@ -11,7 +11,8 @@ from environment_presets import setup_environments_per_trajectory
 from lidar import Lidar  # sensore LiDAR
 import argparse
 from icp import run_icp_over_history  # nuovo: esecuzione ICP su storia
-
+import time  # per ETA nella barra di progresso
+from tqdm import tqdm as _tqdm  # progress bar esterna con ETA
 
 def build_simulator() -> Simulator:
     """Crea un simulatore con un robot di default."""
@@ -233,14 +234,68 @@ def main():
     # Passi per disegnare la posa del robot (in ordine dei casi)
     show_steps = [80, 80, 40, 40, 120, 120]
 
-    # Salva subito immagini di traiettoria
-    visualizer.save_trajectories_images(histories, titles, show_orient_every=show_steps, environment=envs, fit_to='environment')
+    # --------- Barra di progresso unica (tqdm) per tutti i salvataggi ---------
+    # Calcola numero totale di immagini da salvare: traiettorie + (scans + polari) per ciascun caso
+    step_idx = max(1, int(round(float(args.scan_interval) / max(1e-9, float(dt)))))
+    total_steps = len(histories)  # una per traiettoria
+    for hist in histories:
+        N = int(len(hist))
+        scans_count = (0 if N <= 0 else ((N - 1) // step_idx + 1))
+        total_steps += 2 * scans_count  # scans punti + scans polari
 
-    # Salva scansioni (solo punti) con intervallo regolabile
-    for hist, title, env, lid in zip(histories, titles, envs, lidars):
-        visualizer.save_lidar_scans_images(hist, title, lid, env, dt, interval_s=float(args.scan_interval), fit_to='environment')
-        # Salva anche i grafici r(θ) delle stesse scansioni (inclusi i miss a r_max in grigio)
-        visualizer.save_lidar_polar_images(hist, title, lid, env, dt, interval_s=float(args.scan_interval), include_misses=True)
+    def _run_all_saves(cb):
+        # Salva immagini di traiettoria (usa progress globale)
+        visualizer.save_trajectories_images(
+            histories, titles,
+            show_orient_every=show_steps,
+            environment=envs,
+            fit_to='environment',
+            progress_cb=cb,
+            quiet=True,
+        )
+        # Salva scansioni (punti) e polari per ciascun caso (usa progress globale)
+        for hist, title, env, lid in zip(histories, titles, envs, lidars):
+            visualizer.save_lidar_scans_images(
+                hist, title, lid, env, dt,
+                interval_s=float(args.scan_interval),
+                fit_to='environment',
+                progress_cb=cb,
+                quiet=True,
+            )
+            visualizer.save_lidar_polar_images(
+                hist, title, lid, env, dt,
+                interval_s=float(args.scan_interval),
+                include_misses=True,
+                progress_cb=cb,
+                quiet=True,
+            )
+
+    if _tqdm is not None:
+        with _tqdm(total=total_steps, desc="Salvataggio immagini", unit="img", ncols=90) as pbar:
+            cb = lambda _cur, _tot: pbar.update(1)
+            _run_all_saves(cb)
+    else:
+        # Fallback ASCII con ETA
+        start_t = time.time()
+        state = {"done": 0}
+        width = 36
+        def _eta(sec: float) -> str:
+            m, s = divmod(int(round(max(0.0, sec))), 60)
+            return f"{m:02d}:{s:02d}"
+        def cb(_cur, _tot):
+            state["done"] += 1
+            done = min(state["done"], total_steps)
+            frac = done / max(1, total_steps)
+            filled = int(round(width * frac))
+            bar = '#' * filled + '-' * (width - filled)
+            elapsed = time.time() - start_t
+            per_step = elapsed / max(1, done)
+            remain = per_step * max(0, total_steps - done)
+            print(f"\rSalvataggio immagini [{bar}] {done}/{total_steps}  ETA {_eta(remain)}", end='', flush=True)
+            if done >= total_steps:
+                print()
+        _run_all_saves(cb)
+    # --------- Fine barra di progresso unica ---------
 
     # Calcola collisioni via LiDAR solo se richiesto
     stop_indices = [None] * len(histories)
@@ -275,6 +330,15 @@ def main():
     # (Opzionale) Esegui ICP in frame locale per confrontare init=None vs init odometrica
     if args.run_icp:
         print("\n========== ICP (frame locale) ==========")
+        # Legenda dei campi stampati
+        print(
+            "Legenda:\n"
+            "- Coppia N: scansioni consecutive (k-1, k) nel frame locale del robot\n"
+            "- errore medio (rmse) [init=None]: RMSE usando posa iniziale nulla\n"
+            "- errore medio (rmse) [init=odometria]: RMSE usando posa iniziale da odometria\n"
+            "- numero iterazioni ICP [..]: iterazioni eseguite dall'algoritmo ICP\n"
+            "- angolo di rotazione alpha [..] (deg): rotazione stimata tra le due scansioni (in gradi)\n"
+        )
         # Parametri ICP uniformi per tutti i casi (damping meno invasivo)
         trim_fraction = 0.7
         damping_enabled = True
@@ -298,13 +362,14 @@ def main():
             )
             for res in icp_results[0:5]:
                 if not res.get('ok', False):
-                    print(f" k={res['k']:4d}: punti insufficienti (src={res.get('n_src')}, tgt={res.get('n_tgt')})")
+                    print(f" Coppia {res['k']:4d}: punti insufficienti (src={res.get('n_src')}, tgt={res.get('n_tgt')})")
                     continue
                 rn = res['none']; ro = res['odo']
                 print(
-                    f" k={res['k']:4d}: rmse_none={rn['rmse']:.4f}, rmse_odo={ro['rmse']:.4f}, "
-                    f"iters_none={rn['iterations']}, iters_odo={ro['iterations']}, "
-                    f"Δα_none={rn['alpha_deg']:.4f} deg, Δα_odo={ro['alpha_deg']:.4f} deg"
+                    f" Coppia {res['k']:4d}: "
+                    f"rmse[None]={rn['rmse']:.4f}, rmse[Odo]={ro['rmse']:.4f}, "
+                    f"it[None]={rn['iterations']}, it[Odo]={ro['iterations']}, "
+                    f"alpha[None]={rn['alpha_deg']:.4f} deg, alpha[Odo]={ro['alpha_deg']:.4f} deg"
                 )
 
 
