@@ -118,12 +118,17 @@ def _build_lidars_for_cases(envs: List[Environment], titles: List[str]) -> List[
             factor = 0.45
         else:  # random walk
             factor = 0.55
+        # Micro-ritocchi: più copertura e densità raggi per casi 4 (idx==3) e 5 (idx==4)
+        if idx in (3, 4):
+            factor = 0.60
         r_max = max(1.0, factor * diag)
-        # Numero raggi: più densi per il caso 0
+        # Numero raggi: più densi per i casi 3 e 4
         if idx == 0:
             n_rays = 240
         elif idx == 1:
             n_rays = 180
+        elif idx in (3, 4):
+            n_rays = 300
         else:
             n_rays = 240
         lidar = Lidar(n_rays=n_rays, angle_span=2*math.pi, r_max=r_max, angle_offset=0.0, add_noise=False)
@@ -331,7 +336,7 @@ def main():
 
     # (Opzionale) Esegui ICP in frame locale per confrontare init=None vs init odometrica
     if args.run_icp:
-        print("\n========== ICP (frame locale) ==========")
+        print("\n========== ICP ==========")
         # Setup stile evidenziato per intestazioni caso
         BOLD = "\033[1m" if sys.stdout.isatty() else ""
         RESET = "\033[0m" if sys.stdout.isatty() else ""
@@ -339,32 +344,55 @@ def main():
         print(
             "Legenda:\n"
             "- Coppia N: scansioni consecutive (k-1, k) nel frame locale del robot\n"
-            "- errore medio (rmse) [init=None]: RMSE usando posa iniziale nulla\n"
-            "- errore medio (rmse) [init=odometria]: RMSE usando posa iniziale da odometria\n"
-            "- numero iterazioni ICP [..]: iterazioni eseguite dall'algoritmo ICP\n"
-            "- angolo di rotazione alpha [..] (deg): rotazione stimata tra le due scansioni (in gradi)\n"
+            "- Errore medio (rmse) [init=None]: RMSE usando posa iniziale nulla\n"
+            "- Errore medio (rmse) [init=odometria]: RMSE usando posa iniziale da odometria\n"
+            "- Numero iterazioni ICP [..]: iterazioni eseguite dall'algoritmo ICP\n"
+            "- Angolo di rotazione alpha [..] (deg): rotazione stimata tra le due scansioni (in gradi)\n"
             "- Pose relative (GROUND TRUTH vs ICP [None | Odo]): Δx, Δy (m) e α (deg) nel frame del robot a tempo k-1\n"
+            "- Bilanciamento angolare: campionamento quasi uniforme in alpha per ridurre scivolamento su bordi paralleli\n"
         )
         # Parametri ICP uniformi per tutti i casi (damping meno invasivo)
-        trim_fraction = 0.7
+        trim_fraction = 0.6  # ridotto (prima 0.7) per mantenere piu' punti informativi
         damping_enabled = True
-        angle_thresh_deg = 10.0   # prima 7.5
-        struct_ratio_thresh = 0.02  # prima 0.03: scatta meno spesso
-        damp_factor = 0.7        # prima 0.5: riduzione più blanda
+        angle_thresh_deg = 10.0   # soglia rotazione oltre la quale valutare damping
+        struct_ratio_thresh = 0.02  # piu' permissivo del 0.015: attiva damping in degenerazioni realistiche
+        damp_factor = 0.75        # leggermente piu' conservativo
+        sliding_filter_enabled = True
+        sliding_cos_threshold = 0.985  # meno aggressivo per tenere piu' accoppiamenti utili
+        # Nuovo: bilanciamento angolare (favorisce punti lontani per aumentare parallasse)
+        angle_balance_enabled = True
+        angle_bin_deg = 8.0            # bin piu' fini
+        angle_max_per_bin = 18         # piu' punti per bin
+        angle_prefer_far = True
         for idx, (hist, title, env, lid) in enumerate(zip(histories, titles, envs, lidars)):
             print(f"\n{BOLD}CASO {idx+1}: {title.upper()}{RESET}")
+            # Parametri per-caso (micro-ritocchi): casi 4 e 5 (idx 3 e 4)
+            if idx in (3, 4):
+                _maxcorr = 0.38
+                _sliding_cos = 0.99
+                _angle_max_bin = 24
+            else:
+                _maxcorr = 0.40
+                _sliding_cos = 0.985
+                _angle_max_bin = 18
             icp_results = run_icp_over_history(
                 hist, lid, env,
                 step=1,
                 max_iterations=40,
                 tolerance=1e-5,
-                max_correspondence_distance=0.5,
+                max_correspondence_distance=_maxcorr,
                 use_scipy=True,
                 trim_fraction=trim_fraction,
                 damping_enabled=damping_enabled,
                 angle_thresh_deg=angle_thresh_deg,
                 struct_ratio_thresh=struct_ratio_thresh,
                 damp_factor=damp_factor,
+                sliding_filter_enabled=sliding_filter_enabled,
+                sliding_cos_threshold=_sliding_cos,
+                angle_balance_enabled=angle_balance_enabled,
+                angle_bin_deg=8.0,
+                angle_max_per_bin=_angle_max_bin,
+                angle_prefer_far=angle_prefer_far,
             )
             for res in icp_results[0:5]:
                 if not res.get('ok', False):

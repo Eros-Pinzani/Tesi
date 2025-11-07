@@ -478,6 +478,13 @@ def setup_environments_per_trajectory(histories: List[np.ndarray], titles: List[
             _place_circle_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.46, 0.26, 0.05)
             # Sposta il muro rettangolare a destra più in alto per evitare collisioni con la traiettoria
             _place_wall_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.70, 0.74, 0.82, 0.80, 0.03)
+            # --- Nuovi ostacoli per spezzare ambiguita' traslazionale ---
+            # Triangolo compatto lato opposto al primo L-shape (basso-destra)
+            _place_polygon_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.82, 0.24, 0.14, 0.10, 12.0, 'triangle')
+            # Muro diagonale corto per fornire riferimento angolare
+            _place_wall_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.30, 0.18, 0.38, 0.32, 0.025)
+            # Piccolo cerchio lontano (alto-centro) per parallax a distanza diversa
+            _place_circle_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.52, 0.90, 0.035)
         elif idx == 2:  # Circolare (v costante)
             _place_circle_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.14, 0.54, 0.06)
             _place_polygon_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.50, 0.14, 0.18, 0.12, 30.0, 'triangle')
@@ -494,12 +501,19 @@ def setup_environments_per_trajectory(histories: List[np.ndarray], titles: List[
             _place_circle_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.92, 0.10, 0.04)
             # Nuovo ostacolo in alto a destra (triangolo compatto)
             _place_polygon_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.88, 0.90, 0.12, 0.10, 8.0, 'triangle')
+            # EXTRA: L-shape in alto-sinistra e muro diagonale corto per aumentare vincolo angolare
+            _place_polygon_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.12, 0.82, 0.14, 0.12, 25.0, 'L')
+            _place_wall_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.18, 0.30, 0.26, 0.18, 0.025)
         elif idx == 4:  # Traiettoria a 8
             _place_polygon_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.18, 0.44, 0.16, 0.18, 10.0, 'L')
             _place_wall_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.46, 0.22, 0.64, 0.22, 0.05)
             _place_circle_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.82, 0.56, 0.05)
             # Nuovo ostacolo in alto: triangolo compatto nella parte superiore dei bounds
             _place_polygon_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.70, 0.88, 0.14, 0.12, 5.0, 'triangle')
+            # EXTRA: muro diagonale in basso-sinistra, triangolo in basso-destra e piccolo cerchio lontano
+            _place_wall_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.18, 0.18, 0.28, 0.30, 0.025)
+            _place_polygon_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.88, 0.18, 0.12, 0.10, -18.0, 'triangle')
+            _place_circle_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.52, 0.92, 0.035)
         else:  # Random walk
             _place_circle_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.20, 0.24, 0.05)
             _place_polygon_frac(env, bx0, by0, bx1, by1, path_line, path_buffer, 0.50, 0.72, 0.14, 0.16, -12.0, 'triangle')
