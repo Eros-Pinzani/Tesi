@@ -425,6 +425,38 @@ def run_icp_pair_local(
         dynamic_max=dynamic_max,
     )
 
+    # (C) ICP RAW (nudo e crudo): nessun filtro/tweak, nessun trim, no damping, no balancing, no robust, no dynamic maxdist
+    R_raw_none, t_raw_none, _, hist_raw_none, errs_raw_none = icp_point_to_point(
+        src_local, tgt_local,
+        init_pose=None,
+        max_iterations=max_iterations,
+        tolerance=tolerance,
+        max_correspondence_distance=None,
+        trim_fraction=None,
+        use_scipy=use_scipy,
+        verbose=False,
+        damping_enabled=False,
+        sliding_filter_enabled=False,
+        angle_balance_enabled=False,
+        robust_enabled=False,
+        dynamic_maxdist=False,
+    )
+    R_raw_odo, t_raw_odo, _, hist_raw_odo, errs_raw_odo = icp_point_to_point(
+        src_local, tgt_local,
+        init_pose=(R0, t0),
+        max_iterations=max_iterations,
+        tolerance=tolerance,
+        max_correspondence_distance=None,
+        trim_fraction=None,
+        use_scipy=use_scipy,
+        verbose=False,
+        damping_enabled=False,
+        sliding_filter_enabled=False,
+        angle_balance_enabled=False,
+        robust_enabled=False,
+        dynamic_maxdist=False,
+    )
+
     def _theta_from_R(R: np.ndarray) -> float:
         return float(np.arctan2(R[1, 0], R[0, 0]))
 
@@ -450,6 +482,23 @@ def run_icp_pair_local(
             'rmse': float(errs_odo[-1]) if errs_odo.size > 0 else float('inf'),
             'iterations': int(len(hist_odo)),
             'n_corr_last': int(hist_odo[-1]['n_corr']) if len(hist_odo) > 0 else 0,
+        },
+        # Risultati RAW (senza filtri)
+        'raw_none': {
+            'R': R_raw_none, 't': t_raw_none,
+            'alpha_rad': _theta_from_R(R_raw_none),
+            'alpha_deg': _deg(_theta_from_R(R_raw_none)),
+            'rmse': float(errs_raw_none[-1]) if errs_raw_none.size > 0 else float('inf'),
+            'iterations': int(len(hist_raw_none)),
+            'n_corr_last': int(hist_raw_none[-1]['n_corr']) if len(hist_raw_none) > 0 else 0,
+        },
+        'raw_odo': {
+            'R': R_raw_odo, 't': t_raw_odo,
+            'alpha_rad': _theta_from_R(R_raw_odo),
+            'alpha_deg': _deg(_theta_from_R(R_raw_odo)),
+            'rmse': float(errs_raw_odo[-1]) if errs_raw_odo.size > 0 else float('inf'),
+            'iterations': int(len(hist_raw_odo)),
+            'n_corr_last': int(hist_raw_odo[-1]['n_corr']) if len(hist_raw_odo) > 0 else 0,
         }
     }
     return out

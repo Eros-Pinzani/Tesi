@@ -348,8 +348,7 @@ def main():
             "- Errore medio (rmse) [init=odometria]: RMSE usando posa iniziale da odometria\n"
             "- Numero iterazioni ICP [..]: iterazioni eseguite dall'algoritmo ICP\n"
             "- Angolo di rotazione alpha [..] (deg): rotazione stimata tra le due scansioni (in gradi)\n"
-            "- Pose relative (GROUND TRUTH vs ICP [None | Odo]): Δx, Δy (m) e α (deg) nel frame del robot a tempo k-1\n"
-            "- Bilanciamento angolare: campionamento quasi uniforme in alpha per ridurre scivolamento su bordi paralleli\n"
+            "- Pose relative (GROUND TRUTH vs ICP [None | Odo] vs ICP RAW [None | Odo]): Δx, Δy (m) e α (deg) nel frame del robot a tempo k-1\n"
         )
         # Parametri ICP uniformi per tutti i casi (damping meno invasivo)
         trim_fraction = 0.6  # ridotto (prima 0.7) per mantenere piu' punti informativi
@@ -399,30 +398,57 @@ def main():
                     print(f"Coppia {res['k']}: punti insufficienti (src={res.get('n_src')}, tgt={res.get('n_tgt')})")
                     continue
                 rn = res['none']; ro = res['odo']
-                print(
-                    f"Coppia {res['k']}: "
-                    f"rmse[None]={rn['rmse']:.4f}, rmse[Odo]={ro['rmse']:.4f}, "
-                    f"it[None]={rn['iterations']}, it[Odo]={ro['iterations']}, "
-                    f"alpha[None]={rn['alpha_deg']:.4f} deg, alpha[Odo]={ro['alpha_deg']:.4f} deg"
-                )
-                # Riga aggiuntiva: confronto pose relative GT vs ICP (frame robot k-1)
+                rrn = res.get('raw_none'); rro = res.get('raw_odo')
+                # Allineamento semplice: calcolo indent come lunghezza del prefisso "Coppia K: "
+                prefix = f"Coppia {res['k']}: "
+                indent = " " * len(prefix)
+                if rrn and rro:
+                    print(
+                        prefix +
+                        f"rmse[None]={rn['rmse']:.4f}, rmse[Odo]={ro['rmse']:.4f}, "
+                        f"rmseRaw[None]={rrn['rmse']:.4f}, rmseRaw[Odo]={rro['rmse']:.4f}"
+                    )
+                    print(
+                        indent +
+                        f"it[None]={rn['iterations']}, it[Odo]={ro['iterations']}, "
+                        f"itRaw[None]={rrn['iterations']}, itRaw[Odo]={rro['iterations']}"
+                    )
+                    print(
+                        indent +
+                        f"alpha[None]={rn['alpha_deg']:.4f} deg, alpha[Odo]={ro['alpha_deg']:.4f} deg, "
+                        f"alphaRaw[None]={rrn['alpha_deg']:.4f} deg, alphaRaw[Odo]={rro['alpha_deg']:.4f} deg"
+                    )
+                else:
+                    print(
+                        prefix + f"rmse[None]={rn['rmse']:.4f}, rmse[Odo]={ro['rmse']:.4f}"
+                    )
+                    print(
+                        indent + f"it[None]={rn['iterations']}, it[Odo]={ro['iterations']}"
+                    )
+                    print(
+                        indent + f"alpha[None]={rn['alpha_deg']:.4f} deg, alpha[Odo]={ro['alpha_deg']:.4f} deg"
+                    )
+                # Pose
                 k = int(res['k'])
                 try:
-                    prev_pose = hist[k-1]
-                    curr_pose = hist[k]
+                    prev_pose = hist[k-1]; curr_pose = hist[k]
                     R_gt, t_gt = relative_local_transform(prev_pose, curr_pose)
                     def _ang_deg(R):
                         return 0.0 if R is None else float(np.degrees(np.arctan2(R[1, 0], R[0, 0])))
                     gt_ax = float(t_gt[0]); gt_ay = float(t_gt[1]); gt_ad = _ang_deg(R_gt)
                     n_ax = float(rn['t'][0]); n_ay = float(rn['t'][1]); n_ad = float(rn['alpha_deg'])
                     o_ax = float(ro['t'][0]); o_ay = float(ro['t'][1]); o_ad = float(ro['alpha_deg'])
-                    # Blocco Pose su piu' righe per leggibilita'
                     print("    Pose:")
-                    print(f"      Reali:      Δx={gt_ax:+.3f} m, Δy={gt_ay:+.3f} m, α={gt_ad:+.4f} deg")
-                    print(f"      ICP [None]: Δx={n_ax:+.3f} m, Δy={n_ay:+.3f} m, α={n_ad:+.4f} deg")
-                    print(f"      ICP [Odo]:  Δx={o_ax:+.3f} m, Δy={o_ay:+.3f} m, α={o_ad:+.4f} deg")
+                    # Etichette a larghezza fissa per allineare Δx tra le righe
+                    print(f"      {'Reali:':<16}Δx={gt_ax:+.3f} m, Δy={gt_ay:+.3f} m, α={gt_ad:+.4f} deg")
+                    print(f"      {'ICP [None]:':<16}Δx={n_ax:+.3f} m, Δy={n_ay:+.3f} m, α={n_ad:+.4f} deg")
+                    print(f"      {'ICP [Odo]:':<16}Δx={o_ax:+.3f} m, Δy={o_ay:+.3f} m, α={o_ad:+.4f} deg")
+                    if rrn and rro:
+                        rn_ax = float(rrn['t'][0]); rn_ay = float(rrn['t'][1]); rn_ad = float(rrn['alpha_deg'])
+                        ro_ax = float(rro['t'][0]); ro_ay = float(rro['t'][1]); ro_ad = float(rro['alpha_deg'])
+                        print(f"      {'ICP RAW [None]:':<16}Δx={rn_ax:+.3f} m, Δy={rn_ay:+.3f} m, α={rn_ad:+.4f} deg")
+                        print(f"      {'ICP RAW [Odo]:':<16}Δx={ro_ax:+.3f} m, Δy={ro_ay:+.3f} m, α={ro_ad:+.4f} deg")
                 except Exception:
-                    # In caso di indice out of range o altri problemi, salta la riga dettagli
                     pass
 
 
