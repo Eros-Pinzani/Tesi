@@ -11,8 +11,10 @@ from environment_presets import setup_environments_per_trajectory
 from lidar import Lidar  # sensore LiDAR
 import argparse
 from icp import run_icp_over_history  # nuovo: esecuzione ICP su storia
+from icp import relative_local_transform  # nuovo: GT relativo per confronto pose
 import time  # per ETA nella barra di progresso
 from tqdm import tqdm as _tqdm  # progress bar esterna con ETA
+import sys  # nuovo: per rilevare TTY e usare bold ANSI
 
 def build_simulator() -> Simulator:
     """Crea un simulatore con un robot di default."""
@@ -330,6 +332,9 @@ def main():
     # (Opzionale) Esegui ICP in frame locale per confrontare init=None vs init odometrica
     if args.run_icp:
         print("\n========== ICP (frame locale) ==========")
+        # Setup stile evidenziato per intestazioni caso
+        BOLD = "\033[1m" if sys.stdout.isatty() else ""
+        RESET = "\033[0m" if sys.stdout.isatty() else ""
         # Legenda dei campi stampati
         print(
             "Legenda:\n"
@@ -338,6 +343,7 @@ def main():
             "- errore medio (rmse) [init=odometria]: RMSE usando posa iniziale da odometria\n"
             "- numero iterazioni ICP [..]: iterazioni eseguite dall'algoritmo ICP\n"
             "- angolo di rotazione alpha [..] (deg): rotazione stimata tra le due scansioni (in gradi)\n"
+            "- Pose relative (GROUND TRUTH vs ICP [None | Odo]): Δx, Δy (m) e α (deg) nel frame del robot a tempo k-1\n"
         )
         # Parametri ICP uniformi per tutti i casi (damping meno invasivo)
         trim_fraction = 0.7
@@ -346,7 +352,7 @@ def main():
         struct_ratio_thresh = 0.02  # prima 0.03: scatta meno spesso
         damp_factor = 0.7        # prima 0.5: riduzione più blanda
         for idx, (hist, title, env, lid) in enumerate(zip(histories, titles, envs, lidars)):
-            print(f"\nCaso {idx+1}: {title}")
+            print(f"\n{BOLD}CASO {idx+1}: {title.upper()}{RESET}")
             icp_results = run_icp_over_history(
                 hist, lid, env,
                 step=1,
@@ -362,15 +368,34 @@ def main():
             )
             for res in icp_results[0:5]:
                 if not res.get('ok', False):
-                    print(f" Coppia {res['k']:4d}: punti insufficienti (src={res.get('n_src')}, tgt={res.get('n_tgt')})")
+                    print(f"Coppia {res['k']}: punti insufficienti (src={res.get('n_src')}, tgt={res.get('n_tgt')})")
                     continue
                 rn = res['none']; ro = res['odo']
                 print(
-                    f" Coppia {res['k']:4d}: "
+                    f"Coppia {res['k']}: "
                     f"rmse[None]={rn['rmse']:.4f}, rmse[Odo]={ro['rmse']:.4f}, "
                     f"it[None]={rn['iterations']}, it[Odo]={ro['iterations']}, "
                     f"alpha[None]={rn['alpha_deg']:.4f} deg, alpha[Odo]={ro['alpha_deg']:.4f} deg"
                 )
+                # Riga aggiuntiva: confronto pose relative GT vs ICP (frame robot k-1)
+                k = int(res['k'])
+                try:
+                    prev_pose = hist[k-1]
+                    curr_pose = hist[k]
+                    R_gt, t_gt = relative_local_transform(prev_pose, curr_pose)
+                    def _ang_deg(R):
+                        return 0.0 if R is None else float(np.degrees(np.arctan2(R[1, 0], R[0, 0])))
+                    gt_ax = float(t_gt[0]); gt_ay = float(t_gt[1]); gt_ad = _ang_deg(R_gt)
+                    n_ax = float(rn['t'][0]); n_ay = float(rn['t'][1]); n_ad = float(rn['alpha_deg'])
+                    o_ax = float(ro['t'][0]); o_ay = float(ro['t'][1]); o_ad = float(ro['alpha_deg'])
+                    # Blocco Pose su piu' righe per leggibilita'
+                    print("    Pose:")
+                    print(f"      Reali:      Δx={gt_ax:+.3f} m, Δy={gt_ay:+.3f} m, α={gt_ad:+.4f} deg")
+                    print(f"      ICP [None]: Δx={n_ax:+.3f} m, Δy={n_ay:+.3f} m, α={n_ad:+.4f} deg")
+                    print(f"      ICP [Odo]:  Δx={o_ax:+.3f} m, Δy={o_ay:+.3f} m, α={o_ad:+.4f} deg")
+                except Exception:
+                    # In caso di indice out of range o altri problemi, salta la riga dettagli
+                    pass
 
 
 if __name__ == "__main__":
