@@ -143,6 +143,7 @@ def main():
     parser.add_argument("--scan-interval", type=float, default=1.0, help="Intervallo tra scansioni LiDAR salvate [s]")
     parser.add_argument("--viewer-lidar-every", type=int, default=4, help="Aggiorna LiDAR nel viewer ogni N frame (default 4)")
     parser.add_argument("--run-icp", action="store_true", help="Esegui ICP su coppie (k-1,k) in frame locale e stampa confronto init=None vs init=odo")
+    parser.add_argument("--icp-max-pairs", type=int, default=0, help="Numero massimo di coppie da stampare per caso (0 = tutte)")
     args = parser.parse_args()
 
     # Pulisci vecchie immagini per evitare accumulo: trajectories, scans, scans_polar
@@ -374,26 +375,53 @@ def main():
                 _maxcorr = 0.40
                 _sliding_cos = 0.985
                 _angle_max_bin = 18
-            icp_results = run_icp_over_history(
-                hist, lid, env,
-                step=1,
-                max_iterations=40,
-                tolerance=1e-5,
-                max_correspondence_distance=_maxcorr,
-                use_scipy=True,
-                trim_fraction=trim_fraction,
-                damping_enabled=damping_enabled,
-                angle_thresh_deg=angle_thresh_deg,
-                struct_ratio_thresh=struct_ratio_thresh,
-                damp_factor=damp_factor,
-                sliding_filter_enabled=sliding_filter_enabled,
-                sliding_cos_threshold=_sliding_cos,
-                angle_balance_enabled=angle_balance_enabled,
-                angle_bin_deg=8.0,
-                angle_max_per_bin=_angle_max_bin,
-                angle_prefer_far=angle_prefer_far,
-            )
-            for res in icp_results[0:5]:
+            # Progress bar per-caso
+            case_pbar = None
+            case_cb = None
+            if _tqdm is not None:
+                # Calcolo totale coppie per questa history
+                _step = 1
+                total_pairs = max(0, len(range(1, len(hist), max(1, _step))))
+                case_pbar = _tqdm(
+                    total=total_pairs,
+                    desc="",  # niente testo prima della percentuale
+                    unit="pair",
+                    ncols=90,
+                    leave=False,
+                    bar_format="{percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} {unit} [{elapsed}<{remaining}]"
+                )
+                case_cb = lambda d, t, p=case_pbar: p.update(1)
+            try:
+                icp_results = run_icp_over_history(
+                    hist, lid, env,
+                    step=1,
+                    max_iterations=40,
+                    tolerance=1e-5,
+                    max_correspondence_distance=_maxcorr,
+                    use_scipy=True,
+                    trim_fraction=trim_fraction,
+                    damping_enabled=damping_enabled,
+                    angle_thresh_deg=angle_thresh_deg,
+                    struct_ratio_thresh=struct_ratio_thresh,
+                    damp_factor=damp_factor,
+                    sliding_filter_enabled=sliding_filter_enabled,
+                    sliding_cos_threshold=_sliding_cos,
+                    angle_balance_enabled=angle_balance_enabled,
+                    angle_bin_deg=8.0,
+                    angle_max_per_bin=_angle_max_bin,
+                    angle_prefer_far=angle_prefer_far,
+                    progress_cb=case_cb,
+                )
+            finally:
+                if case_pbar is not None:
+                    case_pbar.close()
+            # Determina quante coppie stampare: 0 => tutte
+            _max_pairs = int(args.icp_max_pairs) if hasattr(args, 'icp_max_pairs') else 0
+            if _max_pairs and _max_pairs > 0:
+                _iter_results = icp_results[:_max_pairs]
+            else:
+                _iter_results = icp_results
+            for res in _iter_results:
                 if not res.get('ok', False):
                     print(f"Coppia {res['k']}: punti insufficienti (src={res.get('n_src')}, tgt={res.get('n_tgt')})")
                     continue

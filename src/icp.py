@@ -531,13 +531,17 @@ def run_icp_over_history(
     dynamic_factor: float = 2.0,
     dynamic_min: float = 0.20,
     dynamic_max: float = 0.50,
+    progress_cb: Optional[callable] = None,
 ) -> List[Dict]:
     """Esegue ICP su coppie (k-1,k) a passi 'step' con filtro sliding opzionale.
     Ritorna una lista di risultati (dict) per ciascuna coppia.
-    """
+    Se progress_cb è fornito viene chiamato come progress_cb(done, total) dopo ogni coppia."""
     N = int(len(history))
     results: List[Dict] = []
-    for k in range(1, N, int(max(1, step))):
+    step_i = int(max(1, step))
+    total_pairs = len(range(1, N, step_i))
+    done = 0
+    for k in range(1, N, step_i):
         res = run_icp_pair_local(
             lidar, env, history[k-1], history[k],
             max_iterations=max_iterations,
@@ -564,4 +568,10 @@ def run_icp_over_history(
         )
         res['k'] = int(k)
         results.append(res)
+        done += 1
+        if progress_cb is not None:
+            try:
+                progress_cb(done, total_pairs)
+            except Exception:
+                pass
     return results
