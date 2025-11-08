@@ -34,6 +34,7 @@ from matplotlib.artist import Artist  # Tipo base di tutti gli elementi disegnab
 from environment import Environment  # Per disegnare confini e ostacoli
 from lidar import Lidar  # Tipo del sensore per visualizzazione raggi
 import shutil  # Per pulire cartelle di output delle immagini
+import os
 
 
 # Helper per rimuovere in sicurezza un artista matplotlib (gestisce None ed eccezioni)
@@ -1127,3 +1128,18 @@ def save_lidar_polar_images(
                 progress_cb(idx_k, total)
         plt.close(fig)
 
+
+# Helper per path immagini ICP (ancorati alla root del progetto)
+
+def ensure_icp_dirs(*subfolders: str) -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    base = project_root / 'img' / 'icp'
+    base.mkdir(parents=True, exist_ok=True)
+    for s in subfolders:
+        (base / s).mkdir(parents=True, exist_ok=True)
+
+
+def icp_out_path(*parts: str) -> str:
+    project_root = Path(__file__).resolve().parents[1]
+    base = project_root / 'img' / 'icp'
+    return str(base.joinpath(*parts))

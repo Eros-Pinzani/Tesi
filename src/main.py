@@ -15,6 +15,7 @@ from icp import relative_local_transform  # nuovo: GT relativo per confronto pos
 import time  # per ETA nella barra di progresso
 from tqdm import tqdm as _tqdm  # progress bar esterna con ETA
 import sys  # nuovo: per rilevare TTY e usare bold ANSI
+from icp_plots import save_concept_correspondences, save_alignment_overlays, save_convergence_curves, save_motion_arrows, save_raw_vs_filtered
 
 def build_simulator() -> Simulator:
     """Crea un simulatore con un robot di default."""
@@ -143,12 +144,11 @@ def main():
     parser.add_argument("--scan-interval", type=float, default=1.0, help="Intervallo tra scansioni LiDAR salvate [s]")
     parser.add_argument("--viewer-lidar-every", type=int, default=4, help="Aggiorna LiDAR nel viewer ogni N frame (default 4)")
     parser.add_argument("--run-icp", action="store_true", help="Esegui ICP su coppie (k-1,k) in frame locale e stampa confronto init=None vs init=odo")
-    parser.add_argument("--icp-max-pairs", type=int, default=0, help="Numero massimo di coppie da stampare per caso (0 = tutte)")
     args = parser.parse_args()
 
     # Pulisci vecchie immagini per evitare accumulo: trajectories, scans, scans_polar
     try:
-        visualizer.cleanup_output_images(subfolders=("trajectories", "scans", "scans_polar"), remove_root=False)
+        visualizer.cleanup_output_images(subfolders=("trajectories", "scans", "scans_polar", "icp"), remove_root=False)
     except Exception as e:
         print(f"[main] Avviso: impossibile pulire cartelle immagini: {e}")
 
@@ -364,6 +364,7 @@ def main():
         angle_bin_deg = 8.0            # bin piu' fini
         angle_max_per_bin = 18         # piu' punti per bin
         angle_prefer_far = True
+        icp_all_cases = []  # accumula risultati per caso per grafici finali
         for idx, (hist, title, env, lid) in enumerate(zip(histories, titles, envs, lidars)):
             print(f"\n{BOLD}CASO {idx+1}: {title.upper()}{RESET}")
             # Parametri per-caso (micro-ritocchi): casi 4 e 5 (idx 3 e 4)
@@ -384,7 +385,7 @@ def main():
                 total_pairs = max(0, len(range(1, len(hist), max(1, _step))))
                 case_pbar = _tqdm(
                     total=total_pairs,
-                    desc="",  # niente testo prima della percentuale
+                    desc="",
                     unit="pair",
                     ncols=90,
                     leave=False,
@@ -415,12 +416,21 @@ def main():
             finally:
                 if case_pbar is not None:
                     case_pbar.close()
-            # Determina quante coppie stampare: 0 => tutte
-            _max_pairs = int(args.icp_max_pairs) if hasattr(args, 'icp_max_pairs') else 0
-            if _max_pairs and _max_pairs > 0:
-                _iter_results = icp_results[:_max_pairs]
-            else:
-                _iter_results = icp_results
+            icp_all_cases.append(icp_results)
+            # Stampa solo prime 5 e ultime 5, calcolando comunque tutte le coppie
+            total_pairs = len(icp_results)
+            first = icp_results[:5]
+            last = icp_results[-5:]
+            _iter_results = first + last
+            # Dedup per 'k' preservando l'ordine
+            _seen = set()
+            _dedup = []
+            for r in _iter_results:
+                k = r.get('k')
+                if k not in _seen:
+                    _seen.add(k)
+                    _dedup.append(r)
+            _iter_results = _dedup
             for res in _iter_results:
                 if not res.get('ok', False):
                     print(f"Coppia {res['k']}: punti insufficienti (src={res.get('n_src')}, tgt={res.get('n_tgt')})")
@@ -478,6 +488,73 @@ def main():
                         print(f"      {'ICP RAW [Odo]:':<16}Δx={ro_ax:+.3f} m, Δy={ro_ay:+.3f} m, α={ro_ad:+.4f} deg")
                 except Exception:
                     pass
+
+        # ====== Salvataggio grafici ICP post-process (1,2,3,9,10,14) con progress bar ======
+        try:
+            visualizer.ensure_icp_dirs('concept', 'overlays', 'convergence', 'arrows', 'raw_vs_filtered')
+        except Exception:
+            pass
+        # Funzione per selezionare la coppia "migliore" (piu' informativa) per i grafici:
+        # Criterio: massimizza punteggio = 0.6*|rot_deg| + 0.3*||Δt|| + 0.1*improvement_rmse (raw_none - none)
+        def _select_icp_representative(case_res):
+            cand = [r for r in case_res if r.get('ok')]
+            if not cand:
+                return None
+            def _score(r):
+                try:
+                    gt_R = r.get('gt_R'); gt_t = r.get('gt_t')
+                    rot_deg = 0.0
+                    if gt_R is not None:
+                        rot_deg = abs(float(np.degrees(np.arctan2(gt_R[1, 0], gt_R[0, 0]))))
+                    trans = 0.0
+                    if gt_t is not None:
+                        trans = float(np.linalg.norm(gt_t))
+                    imp = 0.0
+                    try:
+                        imp = float(r['raw_none']['rmse']) - float(r['none']['rmse'])
+                        if imp < 0.0:  # se peggiora, non penalizzare troppo
+                            imp = 0.0
+                    except Exception:
+                        imp = 0.0
+                    return 0.6*rot_deg + 0.3*trans + 0.1*imp
+                except Exception:
+                    return -1e9
+            return max(cand, key=_score)
+        # Conta totale immagini da produrre (per caso: 1,2,3,9,14)
+        per_case_imgs = 5
+        total_icp_imgs = per_case_imgs * len(icp_all_cases)
+
+        if _tqdm is not None:
+            with _tqdm(total=total_icp_imgs, desc="Grafici ICP", unit="img", ncols=90) as pbar_icp:
+                for case_idx, (case_title, case_res) in enumerate(zip(titles, icp_all_cases)):
+                    rep = _select_icp_representative(case_res)
+                    if rep is None:
+                        pbar_icp.update(per_case_imgs)
+                        continue
+                    base_slug = visualizer._slugify(case_title)
+                    save_concept_correspondences(rep, f"Corrispondenze – {case_title}", visualizer.icp_out_path('concept', f"{base_slug}_concept.png"))
+                    pbar_icp.update(1)
+                    save_alignment_overlays(rep, f"Overlay – {case_title}", visualizer.icp_out_path('overlays', f"{base_slug}_overlays.png"))
+                    pbar_icp.update(1)
+                    save_convergence_curves(rep, f"Convergenza – {case_title}", visualizer.icp_out_path('convergence', f"{base_slug}_convergence.png"))
+                    pbar_icp.update(1)
+                    save_motion_arrows(rep, f"Δ Pose – {case_title}", visualizer.icp_out_path('arrows', f"{base_slug}_arrows.png"))
+                    pbar_icp.update(1)
+                    save_raw_vs_filtered(rep, f"RAW vs Filtrato – {case_title}", visualizer.icp_out_path('raw_vs_filtered', f"{base_slug}_raw_vs_filtered.png"))
+                    pbar_icp.update(1)
+                # Nessun boxplot aggregato
+        else:
+            for case_title, case_res in zip(titles, icp_all_cases):
+                rep = _select_icp_representative(case_res)
+                if rep is None:
+                    continue
+                base_slug = visualizer._slugify(case_title)
+                save_concept_correspondences(rep, f"Corrispondenze – {case_title}", visualizer.icp_out_path('concept', f"{base_slug}_concept.png"))
+                save_alignment_overlays(rep, f"Overlay – {case_title}", visualizer.icp_out_path('overlays', f"{base_slug}_overlays.png"))
+                save_convergence_curves(rep, f"Convergenza – {case_title}", visualizer.icp_out_path('convergence', f"{base_slug}_convergence.png"))
+                save_motion_arrows(rep, f"Δ Pose – {case_title}", visualizer.icp_out_path('arrows', f"{base_slug}_arrows.png"))
+                save_raw_vs_filtered(rep, f"RAW vs Filtrato – {case_title}", visualizer.icp_out_path('raw_vs_filtered', f"{base_slug}_raw_vs_filtered.png"))
+            # Nessun boxplot aggregato
 
 
 if __name__ == "__main__":

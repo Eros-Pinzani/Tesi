@@ -369,7 +369,7 @@ def run_icp_pair_local(
             }
 
     # (A) ICP senza inizializzazione
-    R_none, t_none, _, hist_none, errs_none = icp_point_to_point(
+    R_none, t_none, src_tf_none, hist_none, errs_none = icp_point_to_point(
         src_local, tgt_local,
         init_pose=None,
         max_iterations=max_iterations,
@@ -398,7 +398,7 @@ def run_icp_pair_local(
 
     # (B) ICP con inizializzazione odometrica (curr->prev nel frame locale di prev)
     R0, t0 = relative_local_transform(prev_pose, curr_pose)
-    R_odo, t_odo, _, hist_odo, errs_odo = icp_point_to_point(
+    R_odo, t_odo, src_tf_odo, hist_odo, errs_odo = icp_point_to_point(
         src_local, tgt_local,
         init_pose=(R0, t0),
         max_iterations=max_iterations,
@@ -425,8 +425,8 @@ def run_icp_pair_local(
         dynamic_max=dynamic_max,
     )
 
-    # (C) ICP RAW (nudo e crudo): nessun filtro/tweak, nessun trim, no damping, no balancing, no robust, no dynamic maxdist
-    R_raw_none, t_raw_none, _, hist_raw_none, errs_raw_none = icp_point_to_point(
+    # (C) ICP RAW (nudo e crudo): nessun filtro/tweak
+    R_raw_none, t_raw_none, src_tf_raw_none, hist_raw_none, errs_raw_none = icp_point_to_point(
         src_local, tgt_local,
         init_pose=None,
         max_iterations=max_iterations,
@@ -441,7 +441,7 @@ def run_icp_pair_local(
         robust_enabled=False,
         dynamic_maxdist=False,
     )
-    R_raw_odo, t_raw_odo, _, hist_raw_odo, errs_raw_odo = icp_point_to_point(
+    R_raw_odo, t_raw_odo, src_tf_raw_odo, hist_raw_odo, errs_raw_odo = icp_point_to_point(
         src_local, tgt_local,
         init_pose=(R0, t0),
         max_iterations=max_iterations,
@@ -467,6 +467,8 @@ def run_icp_pair_local(
         'ok': True,
         'n_src': int(len(src_local)),
         'n_tgt': int(len(tgt_local)),
+        'gt_R': R0, 'gt_t': t0,  # ground truth relativa
+        'src_local': src_local, 'tgt_local': tgt_local,
         'none': {
             'R': R_none, 't': t_none,
             'alpha_rad': _theta_from_R(R_none),
@@ -474,6 +476,9 @@ def run_icp_pair_local(
             'rmse': float(errs_none[-1]) if errs_none.size > 0 else float('inf'),
             'iterations': int(len(hist_none)),
             'n_corr_last': int(hist_none[-1]['n_corr']) if len(hist_none) > 0 else 0,
+            'errs': errs_none,
+            'hist': hist_none,
+            'src_transformed': src_tf_none,
         },
         'odo': {
             'R': R_odo, 't': t_odo,
@@ -482,8 +487,10 @@ def run_icp_pair_local(
             'rmse': float(errs_odo[-1]) if errs_odo.size > 0 else float('inf'),
             'iterations': int(len(hist_odo)),
             'n_corr_last': int(hist_odo[-1]['n_corr']) if len(hist_odo) > 0 else 0,
+            'errs': errs_odo,
+            'hist': hist_odo,
+            'src_transformed': src_tf_odo,
         },
-        # Risultati RAW (senza filtri)
         'raw_none': {
             'R': R_raw_none, 't': t_raw_none,
             'alpha_rad': _theta_from_R(R_raw_none),
@@ -491,6 +498,9 @@ def run_icp_pair_local(
             'rmse': float(errs_raw_none[-1]) if errs_raw_none.size > 0 else float('inf'),
             'iterations': int(len(hist_raw_none)),
             'n_corr_last': int(hist_raw_none[-1]['n_corr']) if len(hist_raw_none) > 0 else 0,
+            'errs': errs_raw_none,
+            'hist': hist_raw_none,
+            'src_transformed': src_tf_raw_none,
         },
         'raw_odo': {
             'R': R_raw_odo, 't': t_raw_odo,
@@ -499,7 +509,10 @@ def run_icp_pair_local(
             'rmse': float(errs_raw_odo[-1]) if errs_raw_odo.size > 0 else float('inf'),
             'iterations': int(len(hist_raw_odo)),
             'n_corr_last': int(hist_raw_odo[-1]['n_corr']) if len(hist_raw_odo) > 0 else 0,
-        }
+            'errs': errs_raw_odo,
+            'hist': hist_raw_odo,
+            'src_transformed': src_tf_raw_odo,
+        },
     }
     return out
 
