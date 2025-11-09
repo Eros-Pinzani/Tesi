@@ -30,11 +30,11 @@ def relative_local_transform(prev_pose: np.ndarray, curr_pose: np.ndarray) -> Tu
       p_w = Rk p_k + tk  ;  p_{k-1} = R_{k-1}^T (p_w - t_{k-1})
       => p_{k-1} = (R_{k-1}^T Rk) p_k + R_{k-1}^T (tk - t_{k-1})
     """
-    R_prev, t_prev = pose_to_R_t(prev_pose)
-    R_curr, t_curr = pose_to_R_t(curr_pose)
-    R_rel = R_prev.T @ R_curr
-    t_rel = R_prev.T @ (t_curr - t_prev)
-    return R_rel, t_rel
+    r_prev, t_prev = pose_to_R_t(prev_pose)
+    r_curr, t_curr = pose_to_R_t(curr_pose)
+    r_rel = r_prev.T @ r_curr
+    t_rel = r_prev.T @ (t_curr - t_prev)
+    return r_rel, t_rel
 
 
 # --------------------------- Utility campionamento ---------------------------
@@ -72,48 +72,26 @@ def _angle_uniform_subsample(points: np.ndarray, bin_deg: float = 10.0, max_per_
 
 # --------------------------- Mattoncini ICP ---------------------------
 
-def best_fit_transform_2d(A: np.ndarray, B: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Calcola (R 2x2, t 2,) che minimizza ||R A + t - B||_F, con corrispondenze A<->B.
-    A, B: (N,2) numpy arrays
-    """
-    assert A.shape == B.shape and A.shape[1] == 2
-    N = A.shape[0]
-    if N == 0:
-        return np.eye(2), np.zeros(2)
-    centroid_A = A.mean(axis=0)
-    centroid_B = B.mean(axis=0)
-    AA = A - centroid_A
-    BB = B - centroid_B
-    H = AA.T @ BB
-    U, S, Vt = np.linalg.svd(H)
-    R = Vt.T @ U.T
-    if np.linalg.det(R) < 0:
-        Vt[1, :] *= -1
-        R = Vt.T @ U.T
-    t = centroid_B - R @ centroid_A
-    return R, t
-
-
 def nearest_neighbors(src: np.ndarray, dst: np.ndarray, max_distance: Optional[float] = None, use_scipy: bool = True):
     """Per ogni punto src, trova il nearest neighbor in dst. Ritorna (idxs, dists, mask_inliers)."""
     if use_scipy:
         try:
             import importlib
             spatial = importlib.import_module('scipy.spatial')  # type: ignore
-            KDTree = getattr(spatial, 'cKDTree', None)
-            if KDTree is not None:
-                tree = KDTree(np.asarray(dst, dtype=float))
+            kdtree = getattr(spatial, 'cKDTree', None)
+            if kdtree is not None:
+                tree = kdtree(np.asarray(dst, dtype=float))
                 dists, idxs = tree.query(np.asarray(src, dtype=float), k=1)
                 mask = (dists <= float(max_distance)) if (max_distance is not None) else np.ones_like(dists, dtype=bool)
                 return idxs, dists, mask
         except Exception:
             pass  # fallback sotto
     # Fallback O(N*M)
-    N = src.shape[0]
-    idxs = np.empty(N, dtype=int)
-    dists = np.empty(N, dtype=float)
-    mask = np.ones(N, dtype=bool)
-    for i in range(N):
+    n_pts = src.shape[0]
+    idxs = np.empty(n_pts, dtype=int)
+    dists = np.empty(n_pts, dtype=float)
+    mask = np.ones(n_pts, dtype=bool)
+    for i in range(n_pts):
         dif = dst - src[i]
         dist2 = np.sum(dif * dif, axis=1)
         j = int(np.argmin(dist2))
@@ -165,13 +143,13 @@ def icp_point_to_point(
     src = np.asarray(source, dtype=float).copy()
     dst = np.asarray(target, dtype=float).copy()
 
-    total_R = np.eye(2)
+    total_r = np.eye(2)
     total_t = np.zeros(2)
     if init_pose is not None:
-        R0, t0 = init_pose
-        src = (R0 @ src.T).T + t0.reshape(1, 2)
-        total_R = R0 @ total_R
-        total_t = R0 @ total_t + t0
+        r0, t0 = init_pose
+        src = (r0 @ src.T).T + t0.reshape(1, 2)
+        total_r = r0 @ total_r
+        total_t = r0 @ total_t + t0
 
     prev_error: Optional[float] = None
     history: List[Dict] = []
@@ -245,34 +223,34 @@ def icp_point_to_point(
 
         # Calcola trasformazione ottima via SVD (come best_fit_transform_2d), con possibilità di damping
         if weights is None:
-            centroid_A = valid_src.mean(axis=0)
-            centroid_B = valid_dst.mean(axis=0)
-            AA = valid_src - centroid_A
-            BB = valid_dst - centroid_B
-            H = AA.T @ BB
+            centroid_a = valid_src.mean(axis=0)
+            centroid_b = valid_dst.mean(axis=0)
+            aa = valid_src - centroid_a
+            bb = valid_dst - centroid_b
+            h = aa.T @ bb
         else:
             w = weights.reshape(-1, 1)
             Wsum = float(np.sum(w)) or 1.0
-            centroid_A = (valid_src * w).sum(axis=0) / Wsum
-            centroid_B = (valid_dst * w).sum(axis=0) / Wsum
-            AA = valid_src - centroid_A
-            BB = valid_dst - centroid_B
-            H = AA.T @ (BB * w)
-        U, S, Vt = np.linalg.svd(H)
-        R_delta_raw = Vt.T @ U.T
-        if np.linalg.det(R_delta_raw) < 0:
-            Vt[1, :] *= -1
-            R_delta_raw = Vt.T @ U.T
-        t_delta_raw = centroid_B - R_delta_raw @ centroid_A
+            centroid_a = (valid_src * w).sum(axis=0) / Wsum
+            centroid_b = (valid_dst * w).sum(axis=0) / Wsum
+            aa = valid_src - centroid_a
+            bb = valid_dst - centroid_b
+            h = aa.T @ (bb * w)
+        u, s, vt = np.linalg.svd(h)
+        r_delta_raw = vt.T @ u.T
+        if np.linalg.det(r_delta_raw) < 0:
+            vt[1, :] *= -1
+            r_delta_raw = vt.T @ u.T
+        t_delta_raw = centroid_b - r_delta_raw @ centroid_a
 
         # Damping opzionale
-        R_delta = R_delta_raw
+        R_delta = r_delta_raw
         t_delta = t_delta_raw
         if damping_enabled:
-            s_max = float(np.max(S)) if S.size > 0 else 1.0
-            s_min = float(np.min(S)) if S.size > 0 else 1.0
+            s_max = float(np.max(s)) if s.size > 0 else 1.0
+            s_min = float(np.min(s)) if s.size > 0 else 1.0
             struct_ratio = (s_min / s_max) if s_max > 1e-12 else 1.0
-            angle_raw = float(np.arctan2(R_delta_raw[1, 0], R_delta_raw[0, 0]))
+            angle_raw = float(np.arctan2(r_delta_raw[1, 0], r_delta_raw[0, 0]))
             angle_thresh = float(np.deg2rad(angle_thresh_deg))
             if struct_ratio < float(struct_ratio_thresh) and abs(angle_raw) > angle_thresh:
                 r = struct_ratio / float(struct_ratio_thresh)
@@ -280,21 +258,21 @@ def icp_point_to_point(
                 dyn_factor = float(damp_factor) + (1.0 - float(damp_factor)) * r
                 angle_new = angle_raw * dyn_factor
                 R_delta = rot2d(angle_new)
-                t_delta = centroid_B - R_delta @ centroid_A
+                t_delta = centroid_b - R_delta @ centroid_a
 
         # Aggiorna i punti src e accumula la trasformazione
         src = (R_delta @ src.T).T + t_delta.reshape(1, 2)
         total_t = R_delta @ total_t + t_delta
-        total_R = R_delta @ total_R
+        total_r = R_delta @ total_r
 
         d_valid = dists[mask]
         rmse = float(np.sqrt(np.mean(d_valid * d_valid))) if d_valid.size > 0 else float('inf')
         history.append({'iter': it, 'R': R_delta, 't': t_delta, 'mean_error': rmse, 'n_corr': int(mask.sum())})
         if verbose:
             extra = ''
-            if 'S' in locals():
+            if 's' in locals():
                 try:
-                    sr = (float(np.min(S)) / float(np.max(S))) if (S.size > 0 and float(np.max(S)) > 1e-12) else 1.0
+                    sr = (float(np.min(s)) / float(np.max(s))) if (s.size > 0 and float(np.max(s)) > 1e-12) else 1.0
                 except Exception:
                     sr = 1.0
                 extra = f", struct_ratio={sr:.3f}"
@@ -305,9 +283,9 @@ def icp_point_to_point(
             break
         prev_error = rmse
 
-    source_transformed = (total_R @ np.asarray(source).T).T + total_t.reshape(1, 2)
+    source_transformed = (total_r @ np.asarray(source).T).T + total_t.reshape(1, 2)
     errors = np.array([h['mean_error'] for h in history], dtype=float)
-    return total_R, total_t, source_transformed, history, errors
+    return total_r, total_t, source_transformed, history, errors
 
 
 # --------------------------- Runner su history ---------------------------

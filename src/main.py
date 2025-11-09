@@ -2,11 +2,6 @@ from robot import Robot
 from trajectory_generator import TrajectoryGenerator
 from simulator import Simulator
 import visualizer
-from visualizer import _interp_pose  # import esplicito per uso in bisezione collisione
-import math  # Per calcolo di 2πR/v
-from environment import Environment  # per visualizzare bounds e ostacoli
-import numpy as np  # per calcolare bounds dalle traiettorie
-from typing import List, Optional, Tuple
 from environment_presets import setup_environments_per_trajectory
 from lidar import Lidar  # sensore LiDAR
 import argparse
@@ -14,8 +9,27 @@ from icp import run_icp_over_history  # nuovo: esecuzione ICP su storia
 from icp import relative_local_transform  # nuovo: GT relativo per confronto pose
 import time  # per ETA nella barra di progresso
 from tqdm import tqdm as _tqdm  # progress bar esterna con ETA
-import sys  # nuovo: per rilevare TTY e usare bold ANSI
-from icp_plots import save_concept_correspondences, save_alignment_overlays, save_convergence_curves, save_motion_arrows, save_raw_vs_filtered
+import sys  # per rilevare TTY e usare bold ANSI
+from icp_plots import (
+    save_concept_correspondences,
+    save_alignment_overlays,
+    save_convergence_curves,
+    save_motion_arrows,
+    save_raw_vs_filtered,
+)
+from typing import List, Optional, Tuple
+from environment import Environment
+import re
+import math
+import numpy as np
+
+# Helper slugify locale (evita warning su uso di funzione privata) e precompila regex
+_slugify_re = re.compile(r'[^a-z0-9_\-]')
+
+def _slugify_local(text: str) -> str:
+    base = (text or '').lower().strip() or 'case'
+    base = re.sub(r'\s+', '_', base)
+    return _slugify_re.sub('', base)
 
 def build_simulator() -> Simulator:
     """Crea un simulatore con un robot di default."""
@@ -37,7 +51,7 @@ def _support_distance_rect(delta: float, a: float, b: float) -> float:
     return a * c + b * s
 
 
-def _lidar_clearance_measure(pose, lidar: Lidar, env: Environment, body_length: float, body_width: float) -> float:
+def _lidar_clearance_measure(pose: np.ndarray, lidar: Lidar, env: Environment, body_length: float, body_width: float) -> float:
     """Ritorna la minima differenza (range - supporto_rettangolo) sui raggi del LiDAR per la posa.
     Se <= 0 si considera contatto (il corpo tocca l'ostacolo)."""
     # semi-dimensioni del rettangolo corpo (metri)
@@ -47,7 +61,7 @@ def _lidar_clearance_measure(pose, lidar: Lidar, env: Environment, body_length: 
     half = 0.5 * float(lidar.angle_span)
     rel_angles = np.linspace(-half, half, num=lidar.n_rays, endpoint=True)
     # Scansione attuale
-    _pts, ranges = lidar.scan(pose, env, return_ranges=True)
+    _, ranges = lidar.scan(pose, env, return_ranges=True)
     # Misura di clearance: range meno distanza bordo corpo su ciascun raggio
     supports = np.array([_support_distance_rect(float(da), a, b) for da in rel_angles], dtype=float)
     diffs = ranges - supports
@@ -58,8 +72,8 @@ def _first_collision_via_lidar(history: np.ndarray, env: Environment, lidar: Lid
     """Trova primo contatto via LiDAR lungo la storia: ritorna (k, alpha) con k il primo indice in cui c'è contatto
     e alpha la frazione in (k-1,k] in cui la misura di clearance attraversa 0 (bisezione su pose interpolate).
     Se contatto a frame 0: (0, 0.0). Se nessun contatto: (None, None)."""
-    N = len(history)
-    if N <= 0:
+    n = len(history)
+    if n <= 0:
         return None, None
     # Misura iniziale
     m0 = _lidar_clearance_measure(history[0], lidar, env, body_length, body_width)
@@ -67,7 +81,7 @@ def _first_collision_via_lidar(history: np.ndarray, env: Environment, lidar: Lid
         return 0, 0.0
     # Cerca primo frame con misura <= 0
     k_hit = None
-    for k in range(1, N):
+    for k in range(1, n):
         mk = _lidar_clearance_measure(history[k], lidar, env, body_length, body_width)
         if mk <= 0.0:
             k_hit = k
@@ -80,7 +94,7 @@ def _first_collision_via_lidar(history: np.ndarray, env: Environment, lidar: Lid
     p1 = history[k_hit]
     for _ in range(max(1, int(iters))):
         mid = 0.5 * (lo + hi)
-        pose_mid = _interp_pose(p0, p1, mid)
+        pose_mid = _interp_pose_local(p0, p1, mid)
         mm = _lidar_clearance_measure(pose_mid, lidar, env, body_length, body_width)
         if mm <= 0.0:
             hi = mid
@@ -98,7 +112,7 @@ def _env_bounds_diag(env: Environment) -> float:
         w = float(x1 - x0)
         h = float(y1 - y0)
         return float((w*w + h*h) ** 0.5)
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return 10.0
 
 
@@ -106,7 +120,7 @@ def _build_lidars_for_cases(envs: List[Environment], titles: List[str]) -> List[
     """Crea una lista di Lidar per singolo caso con r_max adattivo per non coprire sempre tutti gli ostacoli.
     Strategia: r_max = fattore * diagonale dei bounds, con fattori più piccoli per i casi rettilinei."""
     lidars: List[Lidar] = []
-    for idx, (env, title) in enumerate(zip(envs, titles)):
+    for idx, (env, _unused_title) in enumerate(zip(envs, titles)):
         diag = _env_bounds_diag(env)
         # Fattori per caso: più conservativi sui rettilinei
         if idx == 0:  # Rettilinea v costante: aumenta r_max e n_rays per avere più hit
@@ -137,6 +151,21 @@ def _build_lidars_for_cases(envs: List[Environment], titles: List[str]) -> List[
     return lidars
 
 
+def _interp_pose_local(p0: np.ndarray, p1: np.ndarray, alpha: float) -> np.ndarray:
+    """Interpolazione lineare (x,y,theta) con wrapping di theta in [-pi,pi)."""
+    a = float(max(0.0, min(1.0, alpha)))
+    x0, y0, t0 = map(float, p0)
+    x1, y1, t1 = map(float, p1)
+    dx = x1 - x0
+    dy = y1 - y0
+    dth = (t1 - t0 + math.pi) % (2.0 * math.pi) - math.pi
+    x = x0 + a * dx
+    y = y0 + a * dy
+    th = t0 + a * dth
+    th = (th + math.pi) % (2.0 * math.pi) - math.pi
+    return np.array([x, y, th], dtype=float)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Simulatore traiettorie + salvatore immagini")
     parser.add_argument("--skip-collision", action="store_true", help="Salta il calcolo collisioni per avvio piu' rapido")
@@ -149,7 +178,7 @@ def main():
     # Pulisci vecchie immagini per evitare accumulo: trajectories, scans, scans_polar
     try:
         visualizer.cleanup_output_images(subfolders=("trajectories", "scans", "scans_polar", "icp"), remove_root=False)
-    except Exception as e:
+    except OSError as e:
         print(f"[main] Avviso: impossibile pulire cartelle immagini: {e}")
 
     dt = 0.05       # Passo temporale di integrazione (Eulero)
@@ -169,18 +198,18 @@ def main():
     commands_list = []  # Lista parallela dei comandi (v, omega) per ogni traiettoria (complete)
 
     # 1) Rettilinea (v costante)
-    T_straight = 20.0
+    t_straight = 20.0  # durata rettilinea costante
     v = v_ref
-    vs, omegas = tg.straight(v=v, T=T_straight, dt=dt)
+    vs, omegas = tg.straight(v=v, T=t_straight, dt=dt)
     reset_robot_default(sim)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
     commands_list.append(sim.commands)
     titles.append("Rettilinea (v costante)")
 
     # 2) Rettilinea (v variabile)
-    T_straight_var = 20.0
+    t_straight_var = 20.0  # durata rettilinea a velocita' variabile
     v_min, v_max = v_min_ref, v_max_ref
-    vs, omegas = tg.straight_var_speed(v_min=v_min, v_max=v_max, T=T_straight_var, dt=dt, phase=0.0)
+    vs, omegas = tg.straight_var_speed(v_min=v_min, v_max=v_max, T=t_straight_var, dt=dt, phase=0.0)
     reset_robot_default(sim)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
     commands_list.append(sim.commands)
@@ -188,11 +217,11 @@ def main():
 
     # 3) Circolare (v costante) — 1 giro intero
     v = v_ref
-    R = radius_ref
-    period = (2.0 * math.pi * R) / max(v, 1e-9)
+    r_ref = radius_ref
+    period = (2.0 * math.pi * r_ref) / max(v, 1e-9)
     n_steps = max(1, int(round(period / dt)))
-    T_circle = n_steps * dt
-    vs, omegas = tg.circle(v=v, radius=R, T=T_circle, dt=dt)
+    t_circle = n_steps * dt
+    vs, omegas = tg.circle(v=v, radius=r_ref, T=t_circle, dt=dt)
     reset_robot_default(sim)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
     commands_list.append(sim.commands)
@@ -201,10 +230,10 @@ def main():
     # 4) Circolare (v variabile) — 1 giro intero
     v_min, v_max = v_min_ref, v_max_ref
     v_mid = 0.5 * (v_min + v_max)
-    period_var = (2.0 * math.pi * R) / max(v_mid, 1e-9)
+    period_var = (2.0 * math.pi * r_ref) / max(v_mid, 1e-9)
     n_steps_var = max(1, int(round(period_var / dt)))
-    T_circle_var = n_steps_var * dt
-    vs, omegas = tg.circle_var_speed(v_min=v_min, v_max=v_max, radius=R, T=T_circle_var, dt=dt, phase=0.0)
+    t_circle_var = n_steps_var * dt
+    vs, omegas = tg.circle_var_speed(v_min=v_min, v_max=v_max, radius=r_ref, T=t_circle_var, dt=dt, phase=0.0)
     reset_robot_default(sim)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
     commands_list.append(sim.commands)
@@ -212,22 +241,22 @@ def main():
 
     # 5) Traiettoria a 8 — ciclo completo
     v = v_ref
-    period_eight = (4.0 * math.pi * R) / max(v, 1e-9)
+    period_eight = (4.0 * math.pi * r_ref) / max(v, 1e-9)
     n_steps_eight = max(2, int(round(period_eight / dt)))
     if n_steps_eight % 2 == 1:
         n_steps_eight += 1
-    T_eight = (n_steps_eight - 1e-9) * dt
-    vs, omegas = tg.eight(v=v, radius=R, T=T_eight, dt=dt)
+    t_eight = (n_steps_eight - 1e-9) * dt
+    vs, omegas = tg.eight(v=v, radius=r_ref, T=t_eight, dt=dt)
     reset_robot_default(sim)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
     commands_list.append(sim.commands)
     titles.append("Traiettoria a 8")
 
     # 6) Random walk
-    T_rw = 40.0
+    t_rw = 40.0  # durata random walk
     v_mean = v_ref
     omega_std = omega_std_ref
-    vs, omegas = tg.random_walk(v_mean=v_mean, omega_std=omega_std, T=T_rw, dt=dt, seed=42)
+    vs, omegas = tg.random_walk(v_mean=v_mean, omega_std=omega_std, T=t_rw, dt=dt, seed=42)
     reset_robot_default(sim)
     histories.append(sim.run_from_sequence(vs, omegas, dt))
     commands_list.append(sim.commands)
@@ -247,54 +276,50 @@ def main():
     step_idx = max(1, int(round(float(args.scan_interval) / max(1e-9, float(dt)))))
     total_steps = len(histories)  # una per traiettoria
     for hist in histories:
-        N = int(len(hist))
-        scans_count = (0 if N <= 0 else ((N - 1) // step_idx + 1))
+        n = int(len(hist))
+        scans_count = (0 if n <= 0 else ((n - 1) // step_idx + 1))
         total_steps += 2 * scans_count  # scans punti + scans polari
 
-    def _run_all_saves(cb):
+    def _run_all_saves(progress_cb_fn):
         # Salva immagini di traiettoria (usa progress globale)
         visualizer.save_trajectories_images(
             histories, titles,
             show_orient_every=show_steps,
             environment=envs,
             fit_to='environment',
-            progress_cb=cb,
+            progress_cb=progress_cb_fn,
             quiet=True,
         )
         # Salva scansioni (punti) e polari per ciascun caso (usa progress globale)
-        for hist, title, env, lid in zip(histories, titles, envs, lidars):
-            visualizer.save_lidar_scans_images(
-                hist, title, lid, env, dt,
+        for save_hist, save_title, save_env, save_lid in zip(histories, titles, envs, lidars):
+             visualizer.save_lidar_scans_images(
+                save_hist, save_title, save_lid, save_env, dt,
                 interval_s=float(args.scan_interval),
                 fit_to='environment',
-                progress_cb=cb,
+                progress_cb=progress_cb_fn,
                 quiet=True,
             )
-            visualizer.save_lidar_polar_images(
-                hist, title, lid, env, dt,
+             visualizer.save_lidar_polar_images(
+                save_hist, save_title, save_lid, save_env, dt,
                 interval_s=float(args.scan_interval),
                 include_misses=True,
-                progress_cb=cb,
+                progress_cb=progress_cb_fn,
                 quiet=True,
             )
 
     if _tqdm is not None:
         with _tqdm(total=total_steps, desc="Salvataggio immagini", unit="img", ncols=90) as pbar:
-            cb = lambda _cur, _tot: pbar.update(1)
-            _run_all_saves(cb)
+            progress_cb = lambda _cur, _tot: pbar.update(1)
+            _run_all_saves(progress_cb)
     else:
-        # Fallback ASCII con ETA
-        start_t = time.time()
-        state = {"done": 0}
-        width = 36
+        start_t = time.time(); state = {"done": 0}; width = 36
         def _eta(sec: float) -> str:
-            m, s = divmod(int(round(max(0.0, sec))), 60)
-            return f"{m:02d}:{s:02d}"
-        def cb(_cur, _tot):
+            m, s = divmod(int(round(max(0.0, sec))), 60); return f"{m:02d}:{s:02d}"
+        def _ascii_cb(_c, _t):
             state["done"] += 1
             done = min(state["done"], total_steps)
-            frac = done / max(1, total_steps)
-            filled = int(round(width * frac))
+            progress_fraction = done / max(1, total_steps)
+            filled = int(round(width * progress_fraction))
             bar = '#' * filled + '-' * (width - filled)
             elapsed = time.time() - start_t
             per_step = elapsed / max(1, done)
@@ -302,7 +327,7 @@ def main():
             print(f"\rSalvataggio immagini [{bar}] {done}/{total_steps}  ETA {_eta(remain)}", end='', flush=True)
             if done >= total_steps:
                 print()
-        _run_all_saves(cb)
+        _run_all_saves(_ascii_cb)
     # --------- Fine barra di progresso unica ---------
 
     # Calcola collisioni via LiDAR solo se richiesto
@@ -339,8 +364,8 @@ def main():
     if args.run_icp:
         print("\n========== ICP ==========")
         # Setup stile evidenziato per intestazioni caso
-        BOLD = "\033[1m" if sys.stdout.isatty() else ""
-        RESET = "\033[0m" if sys.stdout.isatty() else ""
+        bold = "\033[1m" if sys.stdout.isatty() else ""
+        reset = "\033[0m" if sys.stdout.isatty() else ""
         # Legenda dei campi stampati
         print(
             "Legenda:\n"
@@ -352,21 +377,19 @@ def main():
             "- Pose relative (GROUND TRUTH vs ICP [None | Odo] vs ICP RAW [None | Odo]): Δx, Δy (m) e α (deg) nel frame del robot a tempo k-1\n"
         )
         # Parametri ICP uniformi per tutti i casi (damping meno invasivo)
-        trim_fraction = 0.6  # ridotto (prima 0.7) per mantenere piu' punti informativi
+        trim_fraction = 0.6
         damping_enabled = True
-        angle_thresh_deg = 10.0   # soglia rotazione oltre la quale valutare damping
-        struct_ratio_thresh = 0.02  # piu' permissivo del 0.015: attiva damping in degenerazioni realistiche
-        damp_factor = 0.75        # leggermente piu' conservativo
+        angle_thresh_deg = 10.0
+        struct_ratio_thresh = 0.02
+        damp_factor = 0.75
         sliding_filter_enabled = True
-        sliding_cos_threshold = 0.985  # meno aggressivo per tenere piu' accoppiamenti utili
         # Nuovo: bilanciamento angolare (favorisce punti lontani per aumentare parallasse)
         angle_balance_enabled = True
-        angle_bin_deg = 8.0            # bin piu' fini
-        angle_max_per_bin = 18         # piu' punti per bin
+        angle_bin_deg = 8.0
         angle_prefer_far = True
-        icp_all_cases = []  # accumula risultati per caso per grafici finali
-        for idx, (hist, title, env, lid) in enumerate(zip(histories, titles, envs, lidars)):
-            print(f"\n{BOLD}CASO {idx+1}: {title.upper()}{RESET}")
+        icp_all_cases = []
+        for idx, (case_hist, case_title, case_env, case_lid) in enumerate(zip(histories, titles, envs, lidars)):
+            print(f"\n{bold}CASO {idx+1}: {case_title.upper()}{reset}")
             # Parametri per-caso (micro-ritocchi): casi 4 e 5 (idx 3 e 4)
             if idx in (3, 4):
                 _maxcorr = 0.38
@@ -380,9 +403,8 @@ def main():
             case_pbar = None
             case_cb = None
             if _tqdm is not None:
-                # Calcolo totale coppie per questa history
                 _step = 1
-                total_pairs = max(0, len(range(1, len(hist), max(1, _step))))
+                total_pairs = max(0, len(range(1, len(case_hist), max(1, _step))))
                 case_pbar = _tqdm(
                     total=total_pairs,
                     desc="",
@@ -391,10 +413,10 @@ def main():
                     leave=False,
                     bar_format="{percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} {unit} [{elapsed}<{remaining}]"
                 )
-                case_cb = lambda d, t, p=case_pbar: p.update(1)
+                case_cb = lambda _d, _t, p=case_pbar: p.update(1)
             try:
                 icp_results = run_icp_over_history(
-                    hist, lid, env,
+                    case_hist, case_lid, case_env,
                     step=1,
                     max_iterations=40,
                     tolerance=1e-5,
@@ -408,7 +430,7 @@ def main():
                     sliding_filter_enabled=sliding_filter_enabled,
                     sliding_cos_threshold=_sliding_cos,
                     angle_balance_enabled=angle_balance_enabled,
-                    angle_bin_deg=8.0,
+                    angle_bin_deg=angle_bin_deg,
                     angle_max_per_bin=_angle_max_bin,
                     angle_prefer_far=angle_prefer_far,
                     progress_cb=case_cb,
@@ -418,7 +440,6 @@ def main():
                     case_pbar.close()
             icp_all_cases.append(icp_results)
             # Stampa solo prime 5 e ultime 5, calcolando comunque tutte le coppie
-            total_pairs = len(icp_results)
             first = icp_results[:5]
             last = icp_results[-5:]
             _iter_results = first + last
@@ -437,7 +458,6 @@ def main():
                     continue
                 rn = res['none']; ro = res['odo']
                 rrn = res.get('raw_none'); rro = res.get('raw_odo')
-                # Allineamento semplice: calcolo indent come lunghezza del prefisso "Coppia K: "
                 prefix = f"Coppia {res['k']}: "
                 indent = " " * len(prefix)
                 if rrn and rro:
@@ -468,16 +488,15 @@ def main():
                     )
                 # Pose
                 k = int(res['k'])
-                try:
-                    prev_pose = hist[k-1]; curr_pose = hist[k]
-                    R_gt, t_gt = relative_local_transform(prev_pose, curr_pose)
-                    def _ang_deg(R):
-                        return 0.0 if R is None else float(np.degrees(np.arctan2(R[1, 0], R[0, 0])))
-                    gt_ax = float(t_gt[0]); gt_ay = float(t_gt[1]); gt_ad = _ang_deg(R_gt)
+                if 1 <= k < len(case_hist):
+                    prev_pose = case_hist[k-1]; curr_pose = case_hist[k]
+                    r_gt, t_gt = relative_local_transform(prev_pose, curr_pose)
+                    def _ang_deg(rm):
+                        return 0.0 if rm is None else float(np.degrees(np.arctan2(rm[1, 0], rm[0, 0])))
+                    gt_ax = float(t_gt[0]); gt_ay = float(t_gt[1]); gt_ad = _ang_deg(r_gt)
                     n_ax = float(rn['t'][0]); n_ay = float(rn['t'][1]); n_ad = float(rn['alpha_deg'])
                     o_ax = float(ro['t'][0]); o_ay = float(ro['t'][1]); o_ad = float(ro['alpha_deg'])
                     print("    Pose:")
-                    # Etichette a larghezza fissa per allineare Δx tra le righe
                     print(f"      {'Reali:':<16}Δx={gt_ax:+.3f} m, Δy={gt_ay:+.3f} m, α={gt_ad:+.4f} deg")
                     print(f"      {'ICP [None]:':<16}Δx={n_ax:+.3f} m, Δy={n_ay:+.3f} m, α={n_ad:+.4f} deg")
                     print(f"      {'ICP [Odo]:':<16}Δx={o_ax:+.3f} m, Δy={o_ay:+.3f} m, α={o_ad:+.4f} deg")
@@ -486,39 +505,41 @@ def main():
                         ro_ax = float(rro['t'][0]); ro_ay = float(rro['t'][1]); ro_ad = float(rro['alpha_deg'])
                         print(f"      {'ICP RAW [None]:':<16}Δx={rn_ax:+.3f} m, Δy={rn_ay:+.3f} m, α={rn_ad:+.4f} deg")
                         print(f"      {'ICP RAW [Odo]:':<16}Δx={ro_ax:+.3f} m, Δy={ro_ay:+.3f} m, α={ro_ad:+.4f} deg")
-                except Exception:
-                    pass
-
         # ====== Salvataggio grafici ICP post-process (1,2,3,9,10,14) con progress bar ======
         try:
             visualizer.ensure_icp_dirs('concept', 'overlays', 'convergence', 'arrows', 'raw_vs_filtered')
-        except Exception:
+        except OSError:
             pass
         # Funzione per selezionare la coppia "migliore" (piu' informativa) per i grafici:
         # Criterio: massimizza punteggio = 0.6*|rot_deg| + 0.3*||Δt|| + 0.1*improvement_rmse (raw_none - none)
-        def _select_icp_representative(case_res):
-            cand = [r for r in case_res if r.get('ok')]
+        def _select_icp_representative(case_results: List[dict]) -> Optional[dict]:
+            cand = [res_item for res_item in case_results if res_item.get('ok')]
             if not cand:
                 return None
-            def _score(r):
-                try:
-                    gt_R = r.get('gt_R'); gt_t = r.get('gt_t')
-                    rot_deg = 0.0
-                    if gt_R is not None:
-                        rot_deg = abs(float(np.degrees(np.arctan2(gt_R[1, 0], gt_R[0, 0]))))
-                    trans = 0.0
-                    if gt_t is not None:
-                        trans = float(np.linalg.norm(gt_t))
-                    imp = 0.0
-                    try:
-                        imp = float(r['raw_none']['rmse']) - float(r['none']['rmse'])
-                        if imp < 0.0:  # se peggiora, non penalizzare troppo
-                            imp = 0.0
-                    except Exception:
-                        imp = 0.0
-                    return 0.6*rot_deg + 0.3*trans + 0.1*imp
-                except Exception:
-                    return -1e9
+            def _score(res_item: dict) -> float:
+                # Rotazione in gradi da matrice 2x2, se disponibile
+                rot_deg = 0.0
+                gt_r = res_item.get('gt_R')
+                if gt_r is not None:
+                    r_mat = np.asarray(gt_r)
+                    if r_mat.shape == (2, 2):
+                        rot_deg = abs(float(np.degrees(np.arctan2(r_mat[1, 0], r_mat[0, 0]))))
+                # Traslazione (norma dei primi due componenti), se disponibile
+                trans = 0.0
+                gt_t = res_item.get('gt_t')
+                if gt_t is not None:
+                    t = np.asarray(gt_t).reshape(-1)
+                    if t.size >= 2:
+                        trans = float(np.linalg.norm(t[:2]))
+                # Miglioramento RMSE RAW->filtrato (troncato a >=0)
+                imp = 0.0
+                raw_n = res_item.get('raw_none'); none_f = res_item.get('none')
+                if isinstance(raw_n, dict) and isinstance(none_f, dict):
+                    rr = raw_n.get('rmse'); rf = none_f.get('rmse')
+                    if isinstance(rr, (int, float)) and isinstance(rf, (int, float)):
+                        diff = float(rr) - float(rf)
+                        imp = diff if diff > 0.0 else 0.0
+                return 0.6*rot_deg + 0.3*trans + 0.1*imp
             return max(cand, key=_score)
         # Conta totale immagini da produrre (per caso: 1,2,3,9,14)
         per_case_imgs = 5
@@ -526,35 +547,28 @@ def main():
 
         if _tqdm is not None:
             with _tqdm(total=total_icp_imgs, desc="Grafici ICP", unit="img", ncols=90) as pbar_icp:
-                for case_idx, (case_title, case_res) in enumerate(zip(titles, icp_all_cases)):
-                    rep = _select_icp_representative(case_res)
+                for _case_idx, (plot_title, plot_res) in enumerate(zip(titles, icp_all_cases)):
+                    rep = _select_icp_representative(plot_res)
                     if rep is None:
                         pbar_icp.update(per_case_imgs)
                         continue
-                    base_slug = visualizer._slugify(case_title)
-                    save_concept_correspondences(rep, f"Corrispondenze – {case_title}", visualizer.icp_out_path('concept', f"{base_slug}_concept.png"))
-                    pbar_icp.update(1)
-                    save_alignment_overlays(rep, f"Overlay – {case_title}", visualizer.icp_out_path('overlays', f"{base_slug}_overlays.png"))
-                    pbar_icp.update(1)
-                    save_convergence_curves(rep, f"Convergenza – {case_title}", visualizer.icp_out_path('convergence', f"{base_slug}_convergence.png"))
-                    pbar_icp.update(1)
-                    save_motion_arrows(rep, f"Δ Pose – {case_title}", visualizer.icp_out_path('arrows', f"{base_slug}_arrows.png"))
-                    pbar_icp.update(1)
-                    save_raw_vs_filtered(rep, f"RAW vs Filtrato – {case_title}", visualizer.icp_out_path('raw_vs_filtered', f"{base_slug}_raw_vs_filtered.png"))
-                    pbar_icp.update(1)
-                # Nessun boxplot aggregato
+                    base_slug = _slugify_local(plot_title)
+                    save_concept_correspondences(rep, f"Corrispondenze – {plot_title}", visualizer.icp_out_path('concept', f"{base_slug}_concept.png")); pbar_icp.update(1)
+                    save_alignment_overlays(rep, f"Overlay – {plot_title}", visualizer.icp_out_path('overlays', f"{base_slug}_overlays.png")); pbar_icp.update(1)
+                    save_convergence_curves(rep, f"Convergenza – {plot_title}", visualizer.icp_out_path('convergence', f"{base_slug}_convergence.png")); pbar_icp.update(1)
+                    save_motion_arrows(rep, f"Δ Pose – {plot_title}", visualizer.icp_out_path('arrows', f"{base_slug}_arrows.png")); pbar_icp.update(1)
+                    save_raw_vs_filtered(rep, f"RAW vs Filtrato – {plot_title}", visualizer.icp_out_path('raw_vs_filtered', f"{base_slug}_raw_vs_filtered.png")); pbar_icp.update(1)
         else:
-            for case_title, case_res in zip(titles, icp_all_cases):
-                rep = _select_icp_representative(case_res)
+            for plot_title, plot_res in zip(titles, icp_all_cases):
+                rep = _select_icp_representative(plot_res)
                 if rep is None:
                     continue
-                base_slug = visualizer._slugify(case_title)
-                save_concept_correspondences(rep, f"Corrispondenze – {case_title}", visualizer.icp_out_path('concept', f"{base_slug}_concept.png"))
-                save_alignment_overlays(rep, f"Overlay – {case_title}", visualizer.icp_out_path('overlays', f"{base_slug}_overlays.png"))
-                save_convergence_curves(rep, f"Convergenza – {case_title}", visualizer.icp_out_path('convergence', f"{base_slug}_convergence.png"))
-                save_motion_arrows(rep, f"Δ Pose – {case_title}", visualizer.icp_out_path('arrows', f"{base_slug}_arrows.png"))
-                save_raw_vs_filtered(rep, f"RAW vs Filtrato – {case_title}", visualizer.icp_out_path('raw_vs_filtered', f"{base_slug}_raw_vs_filtered.png"))
-            # Nessun boxplot aggregato
+                base_slug = _slugify_local(plot_title)
+                save_concept_correspondences(rep, f"Corrispondenze – {plot_title}", visualizer.icp_out_path('concept', f"{base_slug}_concept.png"))
+                save_alignment_overlays(rep, f"Overlay – {plot_title}", visualizer.icp_out_path('overlays', f"{base_slug}_overlays.png"))
+                save_convergence_curves(rep, f"Convergenza – {plot_title}", visualizer.icp_out_path('convergence', f"{base_slug}_convergence.png"))
+                save_motion_arrows(rep, f"Δ Pose – {plot_title}", visualizer.icp_out_path('arrows', f"{base_slug}_arrows.png"))
+                save_raw_vs_filtered(rep, f"RAW vs Filtrato – {plot_title}", visualizer.icp_out_path('raw_vs_filtered', f"{base_slug}_raw_vs_filtered.png"))
 
 
 if __name__ == "__main__":

@@ -3,8 +3,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from typing import Dict
 
-ICPRootDir = os.path.join('img', 'icp')
-
 # Utility salvataggio
 
 def _ensure_dir(path: str):
@@ -26,8 +24,8 @@ def save_concept_correspondences(res: Dict, title: str, out_path: str, max_lines
     if tgt.size == 0 or src.size == 0:
         return
     # Costruisci NN su subset semplice (euclideo O(N*M) sul subset)
-    N = min(len(src), len(tgt), max_lines)
-    src_sub = src[:N]
+    n = min(len(src), len(tgt), max_lines)
+    src_sub = src[:n]
     # Abbina naive: per ogni src, trova NN su tgt
     idxs = []
     for p in src_sub:

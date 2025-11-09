@@ -34,7 +34,6 @@ from matplotlib.artist import Artist  # Tipo base di tutti gli elementi disegnab
 from environment import Environment  # Per disegnare confini e ostacoli
 from lidar import Lidar  # Tipo del sensore per visualizzazione raggi
 import shutil  # Per pulire cartelle di output delle immagini
-import os
 
 
 # Helper per rimuovere in sicurezza un artista matplotlib (gestisce None ed eccezioni)
@@ -342,7 +341,8 @@ def _build_info_text(
     """
     N = int(len(hist) if hist is not None else 0)
     dt = float(max(dt, 1e-9))  # evita divisioni per zero
-    k_pose = int(max(0, min(k_pose, max(N - 1, 0))))
+    n_total = N
+    k_pose = int(max(0, min(k_pose, max(n_total - 1, 0))))
 
     # v, w: da comandi se disponibili, altrimenti stimati dal moto tra due pose
     if commands is not None and len(commands) > 0:
@@ -351,8 +351,8 @@ def _build_info_text(
         v_k = float(commands[cmd_idx][0])
         w_k = float(commands[cmd_idx][1])
     else:
-        if N >= 2:
-            k2 = int(max(1, min(k_pose, N - 1)))
+        if n_total >= 2:
+            k2 = int(max(1, min(k_pose, n_total - 1)))
             k1 = k2 - 1
             dx = float(hist[k2][0] - hist[k1][0])
             dy = float(hist[k2][1] - hist[k1][1])
@@ -366,12 +366,12 @@ def _build_info_text(
 
     # Tempo e posa (corrente o successiva)
     t_k = float(k_pose) * dt
-    if show_next_pose and N > 0:
-        pose_idx = int(min(k_pose + 1, N - 1))
+    if show_next_pose and n_total > 0:
+        pose_idx = int(min(k_pose + 1, n_total - 1))
     else:
         pose_idx = int(k_pose)
 
-    if N > 0:
+    if n_total > 0:
         x_k, y_k, th_k = map(float, hist[pose_idx])
     else:
         x_k = y_k = th_k = 0.0
@@ -422,17 +422,6 @@ def _draw_lidar_rays(ax, origin_xy, lidar_points: np.ndarray, *, ray_color: str 
         arts.append(ln)
     # Marker sui punti di impatto (leggeri)
     scat = ax.scatter(lidar_points[:, 0], lidar_points[:, 1], s=5, c=hit_marker_color, alpha=min(1.0, alpha + 0.20), zorder=2)
-    if isinstance(scat, Artist):
-        arts.append(scat)
-    return arts
-
-
-def _draw_lidar_hits(ax, hit_points: Optional[np.ndarray], *, marker_color: str = 'tab:red', alpha: float = 0.7, size: float = 10.0) -> List[Artist]:
-    """Disegna SOLO i punti di impatto LiDAR come un unico scatter; ritorna la lista con l'artista creato."""
-    arts: List[Artist] = []
-    if hit_points is None or len(hit_points) == 0:
-        return arts
-    scat = ax.scatter(hit_points[:, 0], hit_points[:, 1], s=size, c=marker_color, alpha=alpha, zorder=2)
     if isinstance(scat, Artist):
         arts.append(scat)
     return arts
@@ -938,9 +927,8 @@ def save_lidar_scans_images(
         return
 
     step_idx = max(1, int(round(float(interval_s) / max(1e-9, float(dt)))))
-    N = len(history)
-    total = len(range(0, N, step_idx))
-    case_folder = f"scans/{_slugify(title)}"
+    n_len = len(history)
+    total = len(range(0, n_len, step_idx))
 
     def _set_axes_limits_scan(ax, env: Optional[Environment], pts: Optional[np.ndarray]):
         # Se c'è un environment con bounds, usa quelli per includere tutti gli ostacoli
@@ -968,10 +956,10 @@ def save_lidar_scans_images(
         ax.set_aspect('equal', 'box')
 
     project_root = Path(__file__).resolve().parents[1]
-    out_dir = project_root / 'img' / case_folder
+    out_dir = project_root / 'img' / f"scans/{_slugify(title)}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    for idx_k, k in enumerate(range(0, N, step_idx), start=1):
+    for idx_k, k in enumerate(range(0, n_len, step_idx), start=1):
         pose = history[k]
         try:
             scan_pts, ranges = lidar.scan(pose, environment, return_ranges=True) if environment is not None else (None, None)
@@ -995,7 +983,7 @@ def save_lidar_scans_images(
             _draw_lidar_rays(ax2, pose, hit_points, ray_color='tab:red', hit_marker_color='tab:red', alpha=0.40)
 
         # Colori del robot per prima/ultima scansione salvata
-        last_k = ((N - 1) // step_idx) * step_idx
+        last_k = ((n_len - 1) // step_idx) * step_idx
         is_first = (k == 0)
         is_last = (k == last_k)
         body_col = 'green' if is_first else ('red' if is_last else 'tab:blue')
@@ -1072,8 +1060,8 @@ def save_lidar_polar_images(
     if history is None or len(history) == 0:
         return
     step_idx = max(1, int(round(float(interval_s) / max(1e-9, float(dt)))))
-    N = len(history)
-    total = len(range(0, N, step_idx))
+    n_len = len(history)
+    total = len(range(0, n_len, step_idx))
 
     # Precalcolo degli angoli relativi dei raggi (come in Lidar.scan), convertiti in gradi 0..360
     half = 0.5 * float(lidar.angle_span)
@@ -1084,7 +1072,7 @@ def save_lidar_polar_images(
     out_dir = project_root / 'img' / f"scans_polar/{_slugify(title)}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    for idx_k, k in enumerate(range(0, N, step_idx), start=1):
+    for idx_k, k in enumerate(range(0, n_len, step_idx), start=1):
         pose = history[k]
         try:
             _pts, ranges = lidar.scan(pose, environment, return_ranges=True)

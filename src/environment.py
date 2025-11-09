@@ -6,6 +6,7 @@ from shapely.ops import unary_union  # Operazione per unire più geometrie
 from shapely.geometry.base import BaseGeometry  # Tipo base per geometrie Shapely
 from shapely.geometry import Point, Polygon, LineString  # nuove primitive per forme non rettangolari
 from typing import List, Optional  # Tipi per annotazioni statiche
+from shapely.errors import TopologicalError  # eccezione specifica per operazioni geometriche
 
 
 class Environment:
@@ -96,7 +97,7 @@ class Environment:
             from shapely.ops import nearest_points  # import locale per evitare dipendenza forte a livello modulo
             _, p = nearest_points(origin, inter)
             return float(p.x), float(p.y)
-        except Exception:
+        except (TopologicalError, AttributeError, TypeError, ValueError):
             # Fallback robusto: proietta le coordinate del tipo di geometria in una lista e scegli la più vicina
             def _iter_points(g):
                 gt = getattr(g, 'geom_type', '')
