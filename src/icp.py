@@ -8,6 +8,17 @@ from __future__ import annotations
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 
+# Prova a importare KDTree da SciPy in modo sicuro e definisci un builder
+try:
+    from scipy.spatial import cKDTree as _SciPyKDTree  # type: ignore
+    _HAS_KDTREE = True
+    def _build_kdtree(data: np.ndarray):
+        return _SciPyKDTree(np.asarray(data, dtype=float))
+except ImportError:
+    _HAS_KDTREE = False
+    def _build_kdtree(_data: np.ndarray):  # parametro prefissato con underscore per evitare warning unused
+        raise RuntimeError("SciPy KDTree non disponibile")
+
 # --------------------------- Algebra di base ---------------------------
 
 def rot2d(theta: float) -> np.ndarray:
@@ -16,8 +27,8 @@ def rot2d(theta: float) -> np.ndarray:
     return np.array([[c, -s], [s, c]], dtype=float)
 
 
-def pose_to_R_t(pose: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Converte una posa [x, y, theta] in (R 2x2, t 2,)."""
+def pose_to_r_t(pose: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Converte una posa [x, y, theta] in (r 2x2, t 2,) con nome funzione minuscolo."""
     x, y, th = map(float, pose)
     return rot2d(th), np.array([x, y], dtype=float)
 
@@ -30,8 +41,8 @@ def relative_local_transform(prev_pose: np.ndarray, curr_pose: np.ndarray) -> Tu
       p_w = Rk p_k + tk  ;  p_{k-1} = R_{k-1}^T (p_w - t_{k-1})
       => p_{k-1} = (R_{k-1}^T Rk) p_k + R_{k-1}^T (tk - t_{k-1})
     """
-    r_prev, t_prev = pose_to_R_t(prev_pose)
-    r_curr, t_curr = pose_to_R_t(curr_pose)
+    r_prev, t_prev = pose_to_r_t(prev_pose)
+    r_curr, t_curr = pose_to_r_t(curr_pose)
     r_rel = r_prev.T @ r_curr
     t_rel = r_prev.T @ (t_curr - t_prev)
     return r_rel, t_rel
@@ -74,18 +85,15 @@ def _angle_uniform_subsample(points: np.ndarray, bin_deg: float = 10.0, max_per_
 
 def nearest_neighbors(src: np.ndarray, dst: np.ndarray, max_distance: Optional[float] = None, use_scipy: bool = True):
     """Per ogni punto src, trova il nearest neighbor in dst. Ritorna (idxs, dists, mask_inliers)."""
-    if use_scipy:
+    if use_scipy and _HAS_KDTREE:
         try:
-            import importlib
-            spatial = importlib.import_module('scipy.spatial')  # type: ignore
-            kdtree = getattr(spatial, 'cKDTree', None)
-            if kdtree is not None:
-                tree = kdtree(np.asarray(dst, dtype=float))
-                dists, idxs = tree.query(np.asarray(src, dtype=float), k=1)
-                mask = (dists <= float(max_distance)) if (max_distance is not None) else np.ones_like(dists, dtype=bool)
-                return idxs, dists, mask
-        except Exception:
-            pass  # fallback sotto
+            tree = _build_kdtree(dst)
+            dists, idxs = tree.query(np.asarray(src, dtype=float), k=1)
+            mask = (dists <= float(max_distance)) if (max_distance is not None) else np.ones_like(dists, dtype=bool)
+            return idxs, dists, mask
+        except (ValueError, TypeError, RuntimeError):
+            # Fallback sicuro al brute-force in caso di input malformati o problemi runtime della KDTree
+            pass
     # Fallback O(N*M)
     n_pts = src.shape[0]
     idxs = np.empty(n_pts, dtype=int)
@@ -125,7 +133,6 @@ def icp_point_to_point(
     angle_bin_deg: float = 10.0,
     angle_max_per_bin: int = 12,
     angle_prefer_far: bool = True,
-    # Nuovi parametri robustezza & soglia dinamica
     robust_enabled: bool = True,
     huber_c_factor: float = 1.5,
     dynamic_maxdist: bool = True,
@@ -133,15 +140,25 @@ def icp_point_to_point(
     dynamic_min: float = 0.20,
     dynamic_max: float = 0.50,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[Dict], np.ndarray]:
-    """ICP point-to-point 2D con filtro opzionale anti-sliding.
+    """ICP point-to-point 2D con filtri (sliding, robust, damping) + bilanciamento angolare opzionale.
+
+    Bilanciamento angolare: se angle_balance_enabled True, prima della stima i punti source/target
+    vengono sotto-campionati con _angle_uniform_subsample usando i parametri angle_bin_deg, angle_max_per_bin,
+    angle_prefer_far.
 
     Ritorna: (R_finale, t_finale, source_trasformata, history, errors)
-    - history: lista di dict con chiavi {'iter', 'R', 't', 'mean_error', 'n_corr'}
-    - errors: np.array degli RMSE per iterazione (vero RMSE)
+    - history: lista di dict {'iter','R','t','mean_error','n_corr'}
+    - errors: array RMSE per iterazione.
     """
     assert source.ndim == 2 and source.shape[1] == 2 and target.ndim == 2 and target.shape[1] == 2
     src = np.asarray(source, dtype=float).copy()
     dst = np.asarray(target, dtype=float).copy()
+    if angle_balance_enabled:
+        src = _angle_uniform_subsample(src, bin_deg=angle_bin_deg, max_per_bin=angle_max_per_bin, prefer_far=angle_prefer_far)
+        dst = _angle_uniform_subsample(dst, bin_deg=angle_bin_deg, max_per_bin=angle_max_per_bin, prefer_far=angle_prefer_far)
+        # Se il bilanciamento elimina troppi punti, uscita anticipata (nessuna iterazione)
+        if len(src) < 3 or len(dst) < 3:
+            return np.eye(2), np.zeros(2), src, [], np.array([], dtype=float)
 
     total_r = np.eye(2)
     total_t = np.zeros(2)
@@ -198,8 +215,9 @@ def icp_point_to_point(
                     to_drop_global = global_valid_idx[sliding_mask]
                     full_mask[to_drop_global] = False
                     mask = full_mask
-            except Exception:
-                pass  # in caso di errore nel PCA salta il filtro
+            except (np.linalg.LinAlgError, ValueError, FloatingPointError):
+                # In caso di problemi numerici nella PCA, salta il filtro senza sopprimere altri errori
+                pass
 
         valid_src = src[mask]
         valid_dst = dst[idxs[mask]]
@@ -230,9 +248,9 @@ def icp_point_to_point(
             h = aa.T @ bb
         else:
             w = weights.reshape(-1, 1)
-            Wsum = float(np.sum(w)) or 1.0
-            centroid_a = (valid_src * w).sum(axis=0) / Wsum
-            centroid_b = (valid_dst * w).sum(axis=0) / Wsum
+            w_sum = float(np.sum(w)) or 1.0  # rinominato da Wsum
+            centroid_a = (valid_src * w).sum(axis=0) / w_sum
+            centroid_b = (valid_dst * w).sum(axis=0) / w_sum
             aa = valid_src - centroid_a
             bb = valid_dst - centroid_b
             h = aa.T @ (bb * w)
@@ -244,7 +262,7 @@ def icp_point_to_point(
         t_delta_raw = centroid_b - r_delta_raw @ centroid_a
 
         # Damping opzionale
-        R_delta = r_delta_raw
+        r_delta = r_delta_raw  # rinominato da R_delta
         t_delta = t_delta_raw
         if damping_enabled:
             s_max = float(np.max(s)) if s.size > 0 else 1.0
@@ -257,26 +275,29 @@ def icp_point_to_point(
                 r = max(0.0, min(1.0, r))
                 dyn_factor = float(damp_factor) + (1.0 - float(damp_factor)) * r
                 angle_new = angle_raw * dyn_factor
-                R_delta = rot2d(angle_new)
-                t_delta = centroid_b - R_delta @ centroid_a
+                r_delta = rot2d(angle_new)
+                t_delta = centroid_b - r_delta @ centroid_a
 
         # Aggiorna i punti src e accumula la trasformazione
-        src = (R_delta @ src.T).T + t_delta.reshape(1, 2)
-        total_t = R_delta @ total_t + t_delta
-        total_r = R_delta @ total_r
+        src = (r_delta @ src.T).T + t_delta.reshape(1, 2)
+        total_t = r_delta @ total_t + t_delta
+        total_r = r_delta @ total_r
 
         d_valid = dists[mask]
         rmse = float(np.sqrt(np.mean(d_valid * d_valid))) if d_valid.size > 0 else float('inf')
-        history.append({'iter': it, 'R': R_delta, 't': t_delta, 'mean_error': rmse, 'n_corr': int(mask.sum())})
+        history.append({'iter': it, 'R': r_delta, 't': t_delta, 'mean_error': rmse, 'n_corr': int(mask.sum())})
         if verbose:
-            extra = ''
-            if 's' in locals():
-                try:
-                    sr = (float(np.min(s)) / float(np.max(s))) if (s.size > 0 and float(np.max(s)) > 1e-12) else 1.0
-                except Exception:
+            # Calcolo sicuro del struct_ratio per logging
+            if s.size > 0:
+                max_s = float(np.max(s))
+                min_s = float(np.min(s))
+                if np.isfinite(max_s) and max_s > 1e-12 and np.isfinite(min_s):
+                    sr = min_s / max_s
+                else:
                     sr = 1.0
-                extra = f", struct_ratio={sr:.3f}"
-            print(f"[ICP] Iter {it}: rmse={rmse:.6f}, n_corr={int(mask.sum())}{extra}")
+            else:
+                sr = 1.0
+            print(f"[ICP] Iter {it}: rmse={rmse:.6f}, n_corr={int(mask.sum())}, struct_ratio={sr:.3f}")
         if prev_error is not None and abs(prev_error - rmse) < float(tolerance):
             if verbose:
                 print(f"[ICP] Converged at iter {it} (Δrmse < tol).")
@@ -334,20 +355,8 @@ def run_icp_pair_local(
             'n_tgt': 0 if tgt_local is None else int(len(tgt_local)),
         }
 
-    # Bilanciamento angolare per aumentare diversita' ed evitare sovra-rappresentazione di un solo bordo
-    if angle_balance_enabled:
-        tgt_local = _angle_uniform_subsample(tgt_local, bin_deg=angle_bin_deg, max_per_bin=angle_max_per_bin, prefer_far=angle_prefer_far)
-        src_local = _angle_uniform_subsample(src_local, bin_deg=angle_bin_deg, max_per_bin=angle_max_per_bin, prefer_far=angle_prefer_far)
-        if len(tgt_local) < 3 or len(src_local) < 3:
-            return {
-                'ok': False,
-                'reason': 'after_balance_not_enough_points',
-                'n_src': int(len(src_local)),
-                'n_tgt': int(len(tgt_local)),
-            }
-
     # (A) ICP senza inizializzazione
-    R_none, t_none, src_tf_none, hist_none, errs_none = icp_point_to_point(
+    r_none, t_none, src_tf_none, hist_none, errs_none = icp_point_to_point(
         src_local, tgt_local,
         init_pose=None,
         max_iterations=max_iterations,
@@ -373,12 +382,11 @@ def run_icp_pair_local(
         dynamic_min=dynamic_min,
         dynamic_max=dynamic_max,
     )
-
-    # (B) ICP con inizializzazione odometrica (curr->prev nel frame locale di prev)
-    R0, t0 = relative_local_transform(prev_pose, curr_pose)
-    R_odo, t_odo, src_tf_odo, hist_odo, errs_odo = icp_point_to_point(
+    # (B) ICP con inizializzazione odometrica
+    r0, t0 = relative_local_transform(prev_pose, curr_pose)
+    r_odo, t_odo, src_tf_odo, hist_odo, errs_odo = icp_point_to_point(
         src_local, tgt_local,
-        init_pose=(R0, t0),
+        init_pose=(r0, t0),
         max_iterations=max_iterations,
         tolerance=tolerance,
         max_correspondence_distance=max_correspondence_distance,
@@ -402,9 +410,8 @@ def run_icp_pair_local(
         dynamic_min=dynamic_min,
         dynamic_max=dynamic_max,
     )
-
-    # (C) ICP RAW (nudo e crudo): nessun filtro/tweak
-    R_raw_none, t_raw_none, src_tf_raw_none, hist_raw_none, errs_raw_none = icp_point_to_point(
+    # (C) ICP RAW
+    r_raw_none, t_raw_none, src_tf_raw_none, hist_raw_none, errs_raw_none = icp_point_to_point(
         src_local, tgt_local,
         init_pose=None,
         max_iterations=max_iterations,
@@ -415,13 +422,14 @@ def run_icp_pair_local(
         verbose=False,
         damping_enabled=False,
         sliding_filter_enabled=False,
+        sliding_cos_threshold=sliding_cos_threshold,
         angle_balance_enabled=False,
         robust_enabled=False,
         dynamic_maxdist=False,
     )
-    R_raw_odo, t_raw_odo, src_tf_raw_odo, hist_raw_odo, errs_raw_odo = icp_point_to_point(
+    r_raw_odo, t_raw_odo, src_tf_raw_odo, hist_raw_odo, errs_raw_odo = icp_point_to_point(
         src_local, tgt_local,
-        init_pose=(R0, t0),
+        init_pose=(r0, t0),
         max_iterations=max_iterations,
         tolerance=tolerance,
         max_correspondence_distance=None,
@@ -430,27 +438,25 @@ def run_icp_pair_local(
         verbose=False,
         damping_enabled=False,
         sliding_filter_enabled=False,
+        sliding_cos_threshold=sliding_cos_threshold,
         angle_balance_enabled=False,
         robust_enabled=False,
         dynamic_maxdist=False,
     )
-
-    def _theta_from_R(R: np.ndarray) -> float:
-        return float(np.arctan2(R[1, 0], R[0, 0]))
-
+    def _theta_from_r(r_mat: np.ndarray) -> float:
+        return float(np.arctan2(r_mat[1, 0], r_mat[0, 0]))
     def _deg(rad: float) -> float:
         return float(rad * 180.0 / np.pi)
-
     out = {
         'ok': True,
         'n_src': int(len(src_local)),
         'n_tgt': int(len(tgt_local)),
-        'gt_R': R0, 'gt_t': t0,  # ground truth relativa
+        'gt_R': r0, 'gt_t': t0,
         'src_local': src_local, 'tgt_local': tgt_local,
         'none': {
-            'R': R_none, 't': t_none,
-            'alpha_rad': _theta_from_R(R_none),
-            'alpha_deg': _deg(_theta_from_R(R_none)),
+            'R': r_none, 't': t_none,
+            'alpha_rad': _theta_from_r(r_none),
+            'alpha_deg': _deg(_theta_from_r(r_none)),
             'rmse': float(errs_none[-1]) if errs_none.size > 0 else float('inf'),
             'iterations': int(len(hist_none)),
             'n_corr_last': int(hist_none[-1]['n_corr']) if len(hist_none) > 0 else 0,
@@ -459,9 +465,9 @@ def run_icp_pair_local(
             'src_transformed': src_tf_none,
         },
         'odo': {
-            'R': R_odo, 't': t_odo,
-            'alpha_rad': _theta_from_R(R_odo),
-            'alpha_deg': _deg(_theta_from_R(R_odo)),
+            'R': r_odo, 't': t_odo,
+            'alpha_rad': _theta_from_r(r_odo),
+            'alpha_deg': _deg(_theta_from_r(r_odo)),
             'rmse': float(errs_odo[-1]) if errs_odo.size > 0 else float('inf'),
             'iterations': int(len(hist_odo)),
             'n_corr_last': int(hist_odo[-1]['n_corr']) if len(hist_odo) > 0 else 0,
@@ -470,9 +476,9 @@ def run_icp_pair_local(
             'src_transformed': src_tf_odo,
         },
         'raw_none': {
-            'R': R_raw_none, 't': t_raw_none,
-            'alpha_rad': _theta_from_R(R_raw_none),
-            'alpha_deg': _deg(_theta_from_R(R_raw_none)),
+            'R': r_raw_none, 't': t_raw_none,
+            'alpha_rad': _theta_from_r(r_raw_none),
+            'alpha_deg': _deg(_theta_from_r(r_raw_none)),
             'rmse': float(errs_raw_none[-1]) if errs_raw_none.size > 0 else float('inf'),
             'iterations': int(len(hist_raw_none)),
             'n_corr_last': int(hist_raw_none[-1]['n_corr']) if len(hist_raw_none) > 0 else 0,
@@ -481,9 +487,9 @@ def run_icp_pair_local(
             'src_transformed': src_tf_raw_none,
         },
         'raw_odo': {
-            'R': R_raw_odo, 't': t_raw_odo,
-            'alpha_rad': _theta_from_R(R_raw_odo),
-            'alpha_deg': _deg(_theta_from_R(R_raw_odo)),
+            'R': r_raw_odo, 't': t_raw_odo,
+            'alpha_rad': _theta_from_r(r_raw_odo),
+            'alpha_deg': _deg(_theta_from_r(r_raw_odo)),
             'rmse': float(errs_raw_odo[-1]) if errs_raw_odo.size > 0 else float('inf'),
             'iterations': int(len(hist_raw_odo)),
             'n_corr_last': int(hist_raw_odo[-1]['n_corr']) if len(hist_raw_odo) > 0 else 0,
@@ -527,12 +533,12 @@ def run_icp_over_history(
     """Esegue ICP su coppie (k-1,k) a passi 'step' con filtro sliding opzionale.
     Ritorna una lista di risultati (dict) per ciascuna coppia.
     Se progress_cb è fornito viene chiamato come progress_cb(done, total) dopo ogni coppia."""
-    N = int(len(history))
+    n_total = int(len(history))  # rinominato da N
     results: List[Dict] = []
     step_i = int(max(1, step))
-    total_pairs = len(range(1, N, step_i))
+    total_pairs = len(range(1, n_total, step_i))
     done = 0
-    for k in range(1, N, step_i):
+    for k in range(1, n_total, step_i):
         res = run_icp_pair_local(
             lidar, env, history[k-1], history[k],
             max_iterations=max_iterations,
@@ -563,6 +569,7 @@ def run_icp_over_history(
         if progress_cb is not None:
             try:
                 progress_cb(done, total_pairs)
-            except Exception:
+            except (TypeError, ValueError, RuntimeError):
+                # Ignora callback malformate o errori runtime non critici
                 pass
     return results

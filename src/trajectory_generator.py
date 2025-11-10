@@ -3,7 +3,8 @@
 import numpy as np
 
 class TrajectoryGenerator:
-    def straight(self, v, T, dt):
+    @staticmethod
+    def straight(v, T, dt):
         """Genera una traiettoria lineare con velocità v per un tempo T con passo dt
         Ritorna due array: (velocità lineari, velocità angolari)
         - v: velocità lineare costante
@@ -12,7 +13,8 @@ class TrajectoryGenerator:
         n = int(np.ceil(T/dt))  # Numero di step discreti (arrotondato per eccesso)
         return np.full(n, v), np.zeros(n)  # v costante per tutti gli step, omega=0 ⇒ linea retta
 
-    def straight_var_speed(self, v_min, v_max, T, dt, phase=0.0):
+    @staticmethod
+    def straight_var_speed(v_min, v_max, T, dt, phase=0.0):
         """Moto rettilineo con velocità lineare variabile (profilo sinusoidale tra v_min e v_max).
         - v(t) = v_mid + v_amp * sin(2π t / T + phase)
         - omega(t) = 0 ⇒ traiettoria in linea retta
@@ -25,7 +27,8 @@ class TrajectoryGenerator:
         omegas = np.zeros(n)  # Nessuna rotazione: moto rettilineo
         return vs, omegas
 
-    def circle(self, v, radius, T, dt):
+    @staticmethod
+    def circle(v, radius, T, dt):
         """Genera una traiettoria circolare con velocità v e raggio radius per un tempo T con passo dt
         - omega = v / R: velocità angolare costante (rad/s) per descrivere un cerchio di raggio "radius"
         """
@@ -33,7 +36,8 @@ class TrajectoryGenerator:
         n = int(np.ceil(T/dt))  # Numero di campioni temporali
         return np.full(n, v), np.full(n, omega)  # v e omega costanti ⇒ traiettoria circolare
 
-    def circle_var_speed(self, v_min, v_max, radius, T, dt, phase=0.0):
+    @staticmethod
+    def circle_var_speed(v_min, v_max, radius, T, dt, phase=0.0):
         """Traiettoria circolare a raggio costante con velocità lineare variabile (sinusoidale).
         - v(t) sinusoidale tra v_min e v_max
         - omega(t) = v(t) / R, così il raggio rimane costante mentre varia la velocità (e la velocità angolare)"""
@@ -45,7 +49,8 @@ class TrajectoryGenerator:
         omegas = vs / float(radius)  # Mantiene il raggio costante imponendo omega(t) coerente
         return vs, omegas
 
-    def eight(self, v, radius, T, dt):
+    @staticmethod
+    def eight(v, radius, T, dt):
         """Traiettoria "otto" molto semplice: prima metà curvatura positiva, seconda metà curvatura negativa.
         Non è una lemniscata esatta ma un concatenamento di due archi con stessa |omega|."""
         n = int(np.ceil(T / dt))              # Numero di step discreti totali in cui dividiamo la durata T
@@ -56,7 +61,8 @@ class TrajectoryGenerator:
         omegas[mid:] = -v / float(radius)     # Seconda metà: curvatura opposta (giro "a destra"), crea il cambio di lobo
         return vs, omegas                     # Ritorna i profili (v_k, omega_k) per ogni passo
 
-    def random_walk(self, v_mean, omega_std, T, dt, seed=None):
+    @staticmethod
+    def random_walk(v_mean, omega_std, T, dt, seed=None):
         """Genera una traiettoria randomica con velocità media v_mean e deviazione standard omega_std per un tempo T con passo dt
         - v_mean: velocità lineare costante (media del moto)
         - omega ~ N(0, omega_std^2): rumore gaussiano per esplorazione angolare

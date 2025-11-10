@@ -9,7 +9,7 @@ from icp import run_icp_over_history  # nuovo: esecuzione ICP su storia
 from icp import relative_local_transform  # nuovo: GT relativo per confronto pose
 import time  # per ETA nella barra di progresso
 from tqdm import tqdm as _tqdm  # progress bar esterna con ETA
-import sys  # per rilevare TTY e usare bold ANSI
+# import sys  # per rilevare TTY e usare bold ANSI (non più necessario, grassetto forzato)
 from icp_plots import (
     save_concept_correspondences,
     save_alignment_overlays,
@@ -22,6 +22,13 @@ from environment import Environment
 import re
 import math
 import numpy as np
+# Nuovo: inizializza colorama per garantire rendering ANSI su Windows
+try:
+    from colorama import init as _colorama_init
+except ImportError:
+    _colorama_init = None
+else:
+    _colorama_init()
 
 # Helper slugify locale (evita warning su uso di funzione privata) e precompila regex
 _slugify_re = re.compile(r'[^a-z0-9_\-]')
@@ -364,8 +371,11 @@ def main():
     if args.run_icp:
         print("\n========== ICP ==========")
         # Setup stile evidenziato per intestazioni caso
-        bold = "\033[1m" if sys.stdout.isatty() else ""
-        reset = "\033[0m" if sys.stdout.isatty() else ""
+        bold = "\033[1m"
+        reset = "\033[0m"
+        def _case_title(idx_case: int, title: str) -> str:
+            # Forza sempre bold; se terminale non supporta, rimarrà il testo con sequenza (accettabile) oppure puoi rimuovere
+            return f"{bold}CASO {idx_case}: {title.upper()}{reset}"
         # Legenda dei campi stampati
         print(
             "Legenda:\n"
@@ -389,7 +399,7 @@ def main():
         angle_prefer_far = True
         icp_all_cases = []
         for idx, (case_hist, case_title, case_env, case_lid) in enumerate(zip(histories, titles, envs, lidars)):
-            print(f"\n{bold}CASO {idx+1}: {case_title.upper()}{reset}")
+            print(f"\n{_case_title(idx+1, case_title)}", flush=True)
             # Parametri per-caso (micro-ritocchi): casi 4 e 5 (idx 3 e 4)
             if idx in (3, 4):
                 _maxcorr = 0.38

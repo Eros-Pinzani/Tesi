@@ -86,9 +86,9 @@ def save_convergence_curves(res: Dict, title: str, out_path: str):
 
 def save_motion_arrows(res: Dict, title: str, out_path: str):
     # Frame locale di k-1
-    def ang_deg(R):
-        return float(np.degrees(np.arctan2(R[1, 0], R[0, 0])))
-    gt_t = np.asarray(res['gt_t']); gt_R = np.asarray(res['gt_R'])
+    def ang_deg(r_mat):  # rinominato da R
+        return float(np.degrees(np.arctan2(r_mat[1, 0], r_mat[0, 0])))
+    gt_t = np.asarray(res['gt_t']); gt_r = np.asarray(res['gt_R'])
     ests = [
         ('None', res['none']['t'], res['none']['R'], 'tab:red'),
         ('Odo', res['odo']['t'], res['odo']['R'], 'tab:green'),
@@ -97,10 +97,10 @@ def save_motion_arrows(res: Dict, title: str, out_path: str):
     ]
     plt.figure(figsize=(5, 4))
     # Ground truth
-    plt.quiver(0, 0, gt_t[0], gt_t[1], angles='xy', scale_units='xy', scale=1, color='k', width=0.005, label=f'GT (α={ang_deg(gt_R):+.2f}°)')
-    for name, t, R, col in ests:
+    plt.quiver(0, 0, gt_t[0], gt_t[1], angles='xy', scale_units='xy', scale=1, color='k', width=0.005, label=f'GT (α={ang_deg(gt_r):+.2f}°)')
+    for name, t, r_est, col in ests:  # rinominato R -> r_est
         t = np.asarray(t)
-        plt.quiver(0, 0, t[0], t[1], angles='xy', scale_units='xy', scale=1, color=col, width=0.004, label=f'{name} (α={ang_deg(np.asarray(R)):+.2f}°)')
+        plt.quiver(0, 0, t[0], t[1], angles='xy', scale_units='xy', scale=1, color=col, width=0.004, label=f'{name} (α={ang_deg(np.asarray(r_est)):+.2f}°)')
     plt.axis('equal'); plt.grid(alpha=0.3)
     plt.title(title)
     plt.legend(loc='upper right', fontsize=8)

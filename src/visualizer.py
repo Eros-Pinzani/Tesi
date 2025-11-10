@@ -180,7 +180,7 @@ def cleanup_output_images(*, subfolders: Sequence[str] = ("trajectories", "scans
                     shutil.rmtree(target, ignore_errors=True)
                     target.mkdir(parents=True, exist_ok=True)
         print(f"Pulizia immagini completata in: {img_dir}")
-    except Exception as e:
+    except OSError as e:
         # Non bloccare l'esecuzione in caso di problemi di file system
         print(f"[cleanup_output_images] Avviso: non sono riuscito a pulire completamente {img_dir}: {e}")
 
@@ -251,7 +251,7 @@ def _compute_axes_limits_with_glyphs(history, step, r_robot, d_arrow, env: Optio
             x_max = max(x_max, bx_max)
             y_min = min(y_min, by_min)
             y_max = max(y_max, by_max)
-        except Exception:
+        except (AttributeError, TypeError, ValueError):
             pass
 
     # Piccolo margine finale per aria attorno al disegno
@@ -339,9 +339,8 @@ def _build_info_text(
     - Se sono forniti comandi [v, w], vengono usati; altrimenti v e w sono stimati da differenze finite.
     - show_next_pose permette di mostrare la posa successiva (utile dopo un ridisegno statico).
     """
-    N = int(len(hist) if hist is not None else 0)
+    n_total = int(len(hist) if hist is not None else 0)  # rinominato da N
     dt = float(max(dt, 1e-9))  # evita divisioni per zero
-    n_total = N
     k_pose = int(max(0, min(k_pose, max(n_total - 1, 0))))
 
     # v, w: da comandi se disponibili, altrimenti stimati dal moto tra due pose
@@ -432,6 +431,9 @@ def plot_trajectory(history, show_orient_every=20, title="Traiettoria del robot"
 
     Nota: l'overlay d'errore non viene mostrato nelle immagini statiche; il messaggio appare solo nel viewer al momento della collisione.
     """
+    # Consuma error_message per evitare warning (API compatibile)
+    if error_message is not None:
+        _ = error_message
     fig, ax = plt.subplots(figsize=(7, 7))
     step = max(1, int(show_orient_every))
     _plot_static_trajectory_on_axes(ax, history, step=step, title=title, include_title=True, include_axis_labels=True, environment=environment, fit_to=fit_to)
@@ -564,7 +566,7 @@ def show_trajectories_carousel(
         if not lst:
             return
         for art in lst:
-            with suppress(Exception):
+            with suppress(AttributeError, ValueError, RuntimeError):
                 art.remove()
         lst.clear()
 
@@ -575,9 +577,9 @@ def show_trajectories_carousel(
         """Aggiorna l'intervallo del timer in ms in base al dt della traiettoria corrente."""
         cur_dt = max(1e-6, float(dts_resolved[state["idx"]]))
         interval_ms = int(round(cur_dt * 1000))
-        with suppress(Exception):
+        with suppress(AttributeError, ValueError, RuntimeError):
             timer.interval = interval_ms
-        with suppress(Exception):
+        with suppress(AttributeError, ValueError, RuntimeError):
             if hasattr(timer, 'set_interval'):
                 timer.set_interval(interval_ms)
 
@@ -632,7 +634,7 @@ def show_trajectories_carousel(
             elif force:
                 # nessun punto: pulisci se richiesto
                 _clear_lidar_moving()
-        except Exception:
+        except (AttributeError, TypeError, ValueError, RuntimeError):
             pass
 
     def _draw_moving_at(k: int, *, update_lidar: bool = True):
@@ -756,7 +758,7 @@ def show_trajectories_carousel(
             err_artist = _update_error_artist(fig, err_artist, msg)
             # Metti in pausa e aggiorna pulsante
             state["playing"] = False
-            with suppress(Exception):
+            with suppress(AttributeError, RuntimeError, ValueError):
                 timer.stop()
             fig.canvas.draw_idle()
             return True
@@ -768,12 +770,12 @@ def show_trajectories_carousel(
         hist = histories[idxc]
         n = len(hist)
         k_next = state["frame"] + 1
-        # Controlla collisione prima di avanzare
+        # Controlla collisione prima di avanzarecas
         if _stop_if_collision_reached(k_next):
             return
         if k_next >= n:
             state["playing"] = False
-            with suppress(Exception):
+            with suppress(AttributeError, RuntimeError, ValueError):
                 timer.stop()
             _set_play_label('▶ Play')
             return
@@ -782,10 +784,10 @@ def show_trajectories_carousel(
         # Robot ogni frame
         _draw_moving_at(k_next, update_lidar=False)
         # LiDAR solo ogni N frame
-        if (int(k_next) % max(1, int(lidar_every)) == 0):
+        if int(k_next) % max(1, int(lidar_every)) == 0:
             _draw_lidar_for_pose(hist[k_next], force=True)
         if state["show_info"]:
-            with suppress(Exception):
+            with suppress(AttributeError, TypeError, ValueError):
                 dt_cur = float(dts_resolved[idxc])
                 cmds = commands_list[idxc] if commands_list is not None else None
                 info_text = _build_info_text(hist, k_pose=int(k_next), dt=dt_cur, commands=cmds, use_cmd_of_prev=True, show_next_pose=False)
@@ -805,14 +807,14 @@ def show_trajectories_carousel(
     btn_next = Button(ax_next, 'Successivo ▶▶')
 
     def _set_play_label(text: str):
-        with suppress(Exception):
+        with suppress(AttributeError, RuntimeError, ValueError):
             btn_play.label.set_text(text)
 
     def _navigate(delta: int):
         """Cambia traiettoria (delta=-1 precedente, +1 successiva) e ridisegna."""
         state["idx"] = (state["idx"] + int(delta)) % len(histories)
         state["playing"] = False
-        with suppress(Exception):
+        with suppress(AttributeError, RuntimeError, ValueError):
             timer.stop()
         _set_play_label('▶ Play')
         draw_current()
@@ -827,12 +829,12 @@ def show_trajectories_carousel(
         if not state["playing"]:
             state["playing"] = True
             _set_timer_interval_for_current()
-            with suppress(Exception):
+            with suppress(AttributeError, RuntimeError, ValueError):
                 timer.start()
             _set_play_label('▮▮ Pausa')
         else:
             state["playing"] = False
-            with suppress(Exception):
+            with suppress(AttributeError, RuntimeError, ValueError):
                 timer.stop()
             _set_play_label('▶ Play')
 
@@ -874,6 +876,10 @@ def save_trajectories_images(
     if isinstance(show_orient_every, (list, tuple, np.ndarray)):
         assert len(show_orient_every) == len(histories), "show_orient_every deve avere stessa lunghezza di histories"
 
+    # Consuma error_messages per compatibilità API (non usato in questo save batch)
+    if error_messages is not None:
+        _ = error_messages
+
     def _resolve_show_every(idx: int) -> int:
         if isinstance(show_orient_every, (list, tuple, np.ndarray)):
             return max(1, int(show_orient_every[idx]))
@@ -898,8 +904,10 @@ def save_trajectories_images(
         )
         out_path = _default_save_path(title_str, subfolder='trajectories')
         fig.savefig(out_path, dpi=120, bbox_inches='tight')
+        if not quiet:
+            print(f"[save_trajectories_images] Salvato: {out_path}")
         if callable(progress_cb):
-            with suppress(Exception):
+            with suppress(TypeError, ValueError, RuntimeError):
                 progress_cb(i, total)
         plt.close(fig)
 
@@ -930,14 +938,14 @@ def save_lidar_scans_images(
     n_len = len(history)
     total = len(range(0, n_len, step_idx))
 
-    def _set_axes_limits_scan(ax, env: Optional[Environment], pts: Optional[np.ndarray]):
-        # Se c'è un environment con bounds, usa quelli per includere tutti gli ostacoli
-        if env is not None and getattr(env, 'bounds', None) is not None:
+    def _set_axes_limits_scan(ax, env: Optional[Environment], pts: Optional[np.ndarray], use_env_bounds: bool):
+        # Se richiesto e c'è un environment con bounds, usa quelli per includere tutti gli ostacoli
+        if use_env_bounds and env is not None and getattr(env, 'bounds', None) is not None:
             try:
                 bx, by = env.bounds.exterior.xy  # type: ignore[attr-defined]
                 x_min, x_max = float(np.min(bx)), float(np.max(bx))
                 y_min, y_max = float(np.min(by)), float(np.max(by))
-            except Exception:
+            except (AttributeError, TypeError, ValueError):
                 x_min = y_min = -1.0; x_max = y_max = 1.0
         else:
             # Fallback: usa i soli punti
@@ -963,7 +971,7 @@ def save_lidar_scans_images(
         pose = history[k]
         try:
             scan_pts, ranges = lidar.scan(pose, environment, return_ranges=True) if environment is not None else (None, None)
-        except Exception:
+        except (AttributeError, TypeError, ValueError, RuntimeError):
             scan_pts, ranges = None, None
         if scan_pts is not None and ranges is not None:
             mask_hits = np.asarray(ranges) < float(lidar.r_max) - 1e-12
@@ -973,10 +981,10 @@ def save_lidar_scans_images(
 
         fig2, ax2 = plt.subplots(figsize=(7, 7))
         if environment is not None:
-            with suppress(Exception):
+            with suppress(AttributeError, TypeError, ValueError):
                 environment.plot(ax=ax2)
-        # Limiti assi basati sui bounds dell'ambiente se disponibile, altrimenti sui punti
-        _set_axes_limits_scan(ax2, environment, hit_points)
+        # Limiti assi: controllati da fit_to ('environment' vs 'points')
+        _set_axes_limits_scan(ax2, environment, hit_points, use_env_bounds=(str(fit_to).lower() == 'environment'))
 
         # Disegna le linee dei raggi SOLO verso i punti di impatto (hit)
         if hit_points is not None and len(hit_points) > 0:
@@ -995,7 +1003,7 @@ def save_lidar_scans_images(
             ref = max(float(x1 - x0), float(y1 - y0), 1.0)
             robot_radius = max(0.02, 0.012 * ref)
             dir_len = 2.5 * robot_radius
-        except Exception:
+        except (AttributeError, TypeError, ValueError):
             robot_radius = 0.08
             dir_len = 2.5 * robot_radius
         draw_robot(ax2, pose, robot_radius=robot_radius, dir_len=dir_len, color=body_col, arrow_color='orange', center_color=center_col)
@@ -1033,8 +1041,10 @@ def save_lidar_scans_images(
         stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
         out_path_pts = out_dir / f"{_slugify(title)}_{filename_base}_points_{stamp}.png"
         fig2.savefig(out_path_pts, dpi=120, bbox_inches='tight', pad_inches=0.01)
+        if not quiet:
+            print(f"[save_lidar_scans_images] Salvato: {out_path_pts}")
         if callable(progress_cb):
-            with suppress(Exception):
+            with suppress(TypeError, ValueError, RuntimeError):
                 progress_cb(idx_k, total)
         plt.close(fig2)
 
@@ -1076,7 +1086,7 @@ def save_lidar_polar_images(
         pose = history[k]
         try:
             _pts, ranges = lidar.scan(pose, environment, return_ranges=True)
-        except Exception:
+        except (AttributeError, TypeError, ValueError, RuntimeError):
             continue
         ranges = np.asarray(ranges)
         mask_hit = ranges < float(lidar.r_max) - 1e-12
@@ -1104,15 +1114,17 @@ def save_lidar_polar_images(
         ax.set_xlim(0.0 - 1e-3, 360.0 + 1e-3)
         try:
             ax.set_xticks([0, 60, 120, 180, 240, 300, 360])
-        except Exception:
+        except (TypeError, ValueError):
             pass
         # Legenda se almeno una serie è presente
         if (th_hit.size > 0) or (include_misses and th_miss.size > 0):
             ax.legend(loc='upper right', framealpha=0.85, fontsize=8)
         out_path = out_dir / f"{_slugify(title)}_polar_t{float(k)*float(dt):.2f}s_{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"
         fig.savefig(out_path, dpi=120, bbox_inches='tight')
+        if not quiet:
+            print(f"[save_lidar_polar_images] Salvato: {out_path}")
         if callable(progress_cb):
-            with suppress(Exception):
+            with suppress(TypeError, ValueError, RuntimeError):
                 progress_cb(idx_k, total)
         plt.close(fig)
 
