@@ -180,6 +180,9 @@ def main():
     parser.add_argument("--scan-interval", type=float, default=1.0, help="Intervallo tra scansioni LiDAR salvate [s]")
     parser.add_argument("--viewer-lidar-every", type=int, default=4, help="Aggiorna LiDAR nel viewer ogni N frame (default 4)")
     parser.add_argument("--run-icp", action="store_true", help="Esegui ICP su coppie (k-1,k) in frame locale e stampa confronto init=None vs init=odo")
+    parser.add_argument("--viewer-icp-grid", action="store_true", help="Mostra viewer griglia 5 pannelli (reale + 4 ICP) invece del carosello standard")
+    parser.add_argument("--skip-icp", action="store_true", help="Non eseguire l'ICP prima dell'apertura del viewer")
+    parser.add_argument("--viewer-mode", choices=["grid","carousel"], default="grid", help="Seleziona viewer: 'grid' (ICP a 5 pannelli) o 'carousel' (standard)")
     args = parser.parse_args()
 
     # Pulisci vecchie immagini per evitare accumulo: trajectories, scans, scans_polar
@@ -348,24 +351,158 @@ def main():
             stop_indices.append(kcol)
             stop_fractions.append(frac)
 
-    # Mostra carosello (con raggi) solo se non saltato
+    # Esegui ICP per tutti i casi prima di aprire il viewer (se non saltato), e salva grafici ICP post-process
+    if not args.skip_icp:
+        print("\n[Esecuzione ICP] Avvio calcolo ICP su tutte le traiettorie...")
+        icp_all_cases = []
+        # Parametri ICP globali con piccoli aggiustamenti per alcuni casi
+        trim_fraction = 0.6
+        damping_enabled = True
+        angle_thresh_deg = 10.0
+        struct_ratio_thresh = 0.02
+        damp_factor = 0.75
+        sliding_filter_enabled = True
+        angle_balance_enabled = True
+        angle_bin_deg = 8.0
+        angle_prefer_far = True
+        for idx, (case_hist, case_title, case_env, case_lid) in enumerate(zip(histories, titles, envs, lidars)):
+            if idx in (3, 4):
+                _maxcorr = 0.38; _sliding_cos = 0.99; _angle_max_bin = 24
+            else:
+                _maxcorr = 0.40; _sliding_cos = 0.985; _angle_max_bin = 18
+            # Progress bar per-caso
+            case_pbar = None
+            case_cb = None
+            if _tqdm is not None:
+                _step = 1
+                total_pairs = max(0, len(range(1, len(case_hist), max(1, _step))))
+                case_pbar = _tqdm(
+                    total=total_pairs,
+                    desc=f"ICP – {case_title}",
+                    unit="pair",
+                    ncols=90,
+                    leave=False,
+                    bar_format="{percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} {unit} [{elapsed}<{remaining}]"
+                )
+                case_cb = lambda _d, _t, p=case_pbar: p.update(1)
+            try:
+                res_list = run_icp_over_history(
+                    case_hist, case_lid, case_env,
+                    step=1,
+                    max_iterations=40,
+                    tolerance=1e-5,
+                    max_correspondence_distance=_maxcorr,
+                    use_scipy=True,
+                    trim_fraction=trim_fraction,
+                    damping_enabled=damping_enabled,
+                    angle_thresh_deg=angle_thresh_deg,
+                    struct_ratio_thresh=struct_ratio_thresh,
+                    damp_factor=damp_factor,
+                    sliding_filter_enabled=sliding_filter_enabled,
+                    sliding_cos_threshold=_sliding_cos,
+                    angle_balance_enabled=angle_balance_enabled,
+                    angle_bin_deg=angle_bin_deg,
+                    angle_max_per_bin=_angle_max_bin,
+                    angle_prefer_far=angle_prefer_far,
+                    progress_cb=case_cb,
+                )
+            finally:
+                if case_pbar is not None:
+                    case_pbar.close()
+            icp_all_cases.append(res_list)
+        print("[Esecuzione ICP] Completata. Salvo grafici ICP riassuntivi...")
+        # Salvataggio grafici riassuntivi per ogni caso (concept, overlay, convergence, arrows, raw_vs_filtered)
+        try:
+            visualizer.ensure_icp_dirs('concept', 'overlays', 'convergence', 'arrows', 'raw_vs_filtered')
+        except OSError:
+            pass
+        # Funzioni icp_plots già importate in testa al file.
+        def _select_icp_representative(case_results: List[dict]):
+            cand = [res_item for res_item in case_results if res_item.get('ok')]
+            if not cand:
+                return None
+            def _score(res_item: dict) -> float:
+                rot_deg = 0.0
+                gt_r = res_item.get('gt_R')
+                if gt_r is not None:
+                    r_mat = np.asarray(gt_r)
+                    if r_mat.shape == (2, 2):
+                        rot_deg = abs(float(np.degrees(np.arctan2(r_mat[1, 0], r_mat[0, 0]))))
+                trans = 0.0
+                gt_t = res_item.get('gt_t')
+                if gt_t is not None:
+                    t = np.asarray(gt_t).reshape(-1)
+                    if t.size >= 2:
+                        trans = float(np.linalg.norm(t[:2]))
+                imp = 0.0
+                raw_n = res_item.get('raw_none'); none_f = res_item.get('none')
+                if isinstance(raw_n, dict) and isinstance(none_f, dict):
+                    rr = raw_n.get('rmse'); rf = none_f.get('rmse')
+                    if isinstance(rr, (int, float)) and isinstance(rf, (int, float)):
+                        diff = float(rr) - float(rf)
+                        imp = diff if diff > 0.0 else 0.0
+                return 0.6*rot_deg + 0.3*trans + 0.1*imp
+            return max(cand, key=_score)
+        per_case_imgs = 5
+        total_icp_imgs = per_case_imgs * len(histories)
+        if _tqdm is not None:
+            with _tqdm(total=total_icp_imgs, desc="Grafici ICP", unit="img", ncols=90) as pbar_icp:
+                for plot_title, plot_res in zip(titles, icp_all_cases):
+                    rep = _select_icp_representative(plot_res)
+                    if rep is None:
+                        pbar_icp.update(per_case_imgs)
+                        continue
+                    base_slug = _slugify_local(plot_title)
+                    save_concept_correspondences(rep, f"Corrispondenze – {plot_title}", visualizer.icp_out_path('concept', f"{base_slug}_concept.png")); pbar_icp.update(1)
+                    save_alignment_overlays(rep, f"Overlay – {plot_title}", visualizer.icp_out_path('overlays', f"{base_slug}_overlays.png")); pbar_icp.update(1)
+                    save_convergence_curves(rep, f"Convergenza – {plot_title}", visualizer.icp_out_path('convergence', f"{base_slug}_convergence.png")); pbar_icp.update(1)
+                    save_motion_arrows(rep, f"Δ Pose – {plot_title}", visualizer.icp_out_path('arrows', f"{base_slug}_arrows.png")); pbar_icp.update(1)
+                    save_raw_vs_filtered(rep, f"RAW vs Filtrato – {plot_title}", visualizer.icp_out_path('raw_vs_filtered', f"{base_slug}_raw_vs_filtered.png")); pbar_icp.update(1)
+        else:
+            for plot_title, plot_res in zip(titles, icp_all_cases):
+                rep = _select_icp_representative(plot_res)
+                if rep is None:
+                    continue
+                base_slug = _slugify_local(plot_title)
+                save_concept_correspondences(rep, f"Corrispondenze – {plot_title}", visualizer.icp_out_path('concept', f"{base_slug}_concept.png"))
+                save_alignment_overlays(rep, f"Overlay – {plot_title}", visualizer.icp_out_path('overlays', f"{base_slug}_overlays.png"))
+                save_convergence_curves(rep, f"Convergenza – {plot_title}", visualizer.icp_out_path('convergence', f"{base_slug}_convergence.png"))
+                save_motion_arrows(rep, f"Δ Pose – {plot_title}", visualizer.icp_out_path('arrows', f"{base_slug}_arrows.png"))
+                save_raw_vs_filtered(rep, f"RAW vs Filtrato – {plot_title}", visualizer.icp_out_path('raw_vs_filtered', f"{base_slug}_raw_vs_filtered.png"))
+
+    # Mostra viewer dopo tutti i salvataggi e (opzionale) ICP
     if not args.skip_viewer:
-        visualizer.show_trajectories_carousel(
-            histories,
-            titles,
-            show_orient_every=show_steps,
-            save_each=False,
-            commands_list=commands_list,
-            dts=dt,
-            show_info=True,
-            environment=envs,
-            fit_to='environment',
-            stop_indices=stop_indices,
-            stop_fractions=stop_fractions,
-            lidar=lidars,
-            show_lidar=True,
-            lidar_every=int(max(1, args.viewer_lidar_every)),
-         )
+        if args.viewer_mode == "grid":
+            visualizer.show_trajectories_icp_grid(
+                histories,
+                titles,
+                environment=envs,
+                lidar=lidars,
+                dts=dt,
+                commands_list=commands_list,
+                fit_to='environment',
+                show_info=True,
+                error_messages=[None]*len(histories),
+                stop_indices=stop_indices,
+                stop_fractions=stop_fractions,
+            )
+        else:
+            visualizer.show_trajectories_carousel(
+                histories,
+                titles,
+                show_orient_every=show_steps,
+                save_each=False,
+                commands_list=commands_list,
+                dts=dt,
+                show_info=True,
+                environment=envs,
+                fit_to='environment',
+                stop_indices=stop_indices,
+                stop_fractions=stop_fractions,
+                lidar=lidars,
+                show_lidar=True,
+                lidar_every=int(max(1, args.viewer_lidar_every)),
+             )
 
     # (Opzionale) Esegui ICP in frame locale per confrontare init=None vs init odometrica
     if args.run_icp:

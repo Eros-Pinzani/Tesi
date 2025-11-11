@@ -379,8 +379,8 @@ def setup_environments_per_trajectory(histories: List[np.ndarray], titles: List[
             c1 = _interp_point(0.35)
             c2 = _interp_point(0.65)
             d0 = float(clearance + 0.04 * path_span)
-            c0_r = _clamp_pt(c0 - d0 * n_hat)
             r0 = float(min(0.65 * clearance, 0.05 * path_span))
+            c0_r = _clamp_pt(c0 - d0 * n_hat)
             _add_circle_safe(c0_r[0], c0_r[1], r0)
 
             c1_l = _clamp_pt(c1 + d_off * n_hat)

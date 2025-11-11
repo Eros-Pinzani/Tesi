@@ -139,6 +139,9 @@ def icp_point_to_point(
     dynamic_factor: float = 2.0,
     dynamic_min: float = 0.20,
     dynamic_max: float = 0.50,
+    stop_if_init_good: bool = True,
+    init_rmse_threshold: float = 0.10,
+    adaptive_filters: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[Dict], np.ndarray]:
     """ICP point-to-point 2D con filtri (sliding, robust, damping) + bilanciamento angolare opzionale.
 
@@ -167,12 +170,30 @@ def icp_point_to_point(
         src = (r0 @ src.T).T + t0.reshape(1, 2)
         total_r = r0 @ total_r
         total_t = r0 @ total_t + t0
+        # Valuta se l'init è già buono e fermati subito
+        if stop_if_init_good:
+            try:
+                _idx0, d0, m0 = nearest_neighbors(src, dst, max_correspondence_distance, use_scipy=use_scipy)
+                if m0.any():
+                    rmse0 = float(np.sqrt(np.mean((d0[m0])**2)))
+                    if rmse0 <= float(init_rmse_threshold) and int(m0.sum()) >= int(min_after_sliding):
+                        source_transformed = (total_r @ np.asarray(source).T).T + total_t.reshape(1, 2)
+                        return total_r, total_t, source_transformed, [], np.array([rmse0], dtype=float)
+            except (ValueError, TypeError, RuntimeError, np.linalg.LinAlgError):
+                pass
 
     prev_error: Optional[float] = None
     history: List[Dict] = []
 
+    adaptive_sliding = sliding_filter_enabled
+    adaptive_trim = trim_fraction
+
     for it in range(int(max_iterations)):
         idxs, dists, mask = nearest_neighbors(src, dst, max_correspondence_distance, use_scipy=use_scipy)
+        # Adattività: se poche corrispondenze disabilita sliding/trim per non perdere informazione
+        if adaptive_filters and mask.sum() < (2 * min_after_sliding):
+            adaptive_sliding = False
+            adaptive_trim = None
 
         # Soglia dinamica per corrispondenze (stringe il max_distance effettivo in base alla mediana)
         if dynamic_maxdist and mask.any():
@@ -183,14 +204,14 @@ def icp_point_to_point(
                 mask = mask & (dists <= thr_dyn)
 
         # Trimming corrispondenze più lontane
-        if mask.any() and trim_fraction is not None and 0.0 < float(trim_fraction) < 1.0:
+        if mask.any() and adaptive_trim is not None and 0.0 < float(adaptive_trim) < 1.0:
             valid_d = dists[mask]
             if len(valid_d) >= 6:
-                thr_trim = float(np.quantile(valid_d, float(trim_fraction)))
+                thr_trim = float(np.quantile(valid_d, float(adaptive_trim)))
                 mask = mask & (dists <= thr_trim)
 
         # Filtro sliding (solo se abilitato e abbastanza corrispondenze)
-        if sliding_filter_enabled and mask.sum() >= min_after_sliding:
+        if adaptive_sliding and mask.sum() >= min_after_sliding:
             # PCA sulla nuvola target accoppiata (direzione principale)
             paired_dst = dst[idxs[mask]]
             centered = paired_dst - paired_dst.mean(axis=0)
@@ -447,6 +468,34 @@ def run_icp_pair_local(
         return float(np.arctan2(r_mat[1, 0], r_mat[0, 0]))
     def _deg(rad: float) -> float:
         return float(rad * 180.0 / np.pi)
+    def _pose_errors(r_rel: np.ndarray, t_rel: np.ndarray) -> Tuple[float, float]:
+        x_prev, y_prev, th_prev = map(float, prev_pose)
+        x_curr, y_curr, th_curr = map(float, curr_pose)
+        ang_rel = float(np.arctan2(r_rel[1, 0], r_rel[0, 0]))
+        dx_w = np.cos(th_prev) * t_rel[0] - np.sin(th_prev) * t_rel[1]
+        dy_w = np.sin(th_prev) * t_rel[0] + np.cos(th_prev) * t_rel[1]
+        x_pred = x_prev + dx_w
+        y_pred = y_prev + dy_w
+        th_pred = th_prev + ang_rel
+        th_pred = (th_pred + np.pi) % (2 * np.pi) - np.pi
+        th_curr_wrapped = (th_curr + np.pi) % (2 * np.pi) - np.pi
+        trans_err = float(np.hypot(x_pred - x_curr, y_pred - y_curr))
+        rot_err = th_pred - th_curr_wrapped
+        rot_err = (rot_err + np.pi) % (2 * np.pi) - np.pi
+        return trans_err, abs(float(np.degrees(rot_err)))
+    none_trans_err, none_rot_err = _pose_errors(r_none, t_none)
+    odo_trans_err, odo_rot_err = _pose_errors(r_odo, t_odo)
+    raw_none_trans_err, raw_none_rot_err = _pose_errors(r_raw_none, t_raw_none)
+    raw_odo_trans_err, raw_odo_rot_err = _pose_errors(r_raw_odo, t_raw_odo)
+    best_key = min([
+        ('none', none_trans_err, r_none, t_none),
+        ('odo', odo_trans_err, r_odo, t_odo),
+        ('raw_none', raw_none_trans_err, r_raw_none, t_raw_none),
+        ('raw_odo', raw_odo_trans_err, r_raw_odo, t_raw_odo)
+    ], key=lambda x: x[1])
+    best_r = best_key[2]; best_t = best_key[3]
+    best_trans_err, best_rot_err = _pose_errors(best_r, best_t)
+
     out = {
         'ok': True,
         'n_src': int(len(src_local)),
@@ -460,6 +509,8 @@ def run_icp_pair_local(
             'rmse': float(errs_none[-1]) if errs_none.size > 0 else float('inf'),
             'iterations': int(len(hist_none)),
             'n_corr_last': int(hist_none[-1]['n_corr']) if len(hist_none) > 0 else 0,
+            'pose_err_trans': none_trans_err,
+            'pose_err_rot_deg': none_rot_err,
             'errs': errs_none,
             'hist': hist_none,
             'src_transformed': src_tf_none,
@@ -496,6 +547,11 @@ def run_icp_pair_local(
             'errs': errs_raw_odo,
             'hist': hist_raw_odo,
             'src_transformed': src_tf_raw_odo,
+        },
+        'best': {
+            'R': best_r, 't': best_t,
+            'pose_err_trans': best_trans_err,
+            'pose_err_rot_deg': best_rot_err,
         },
     }
     return out

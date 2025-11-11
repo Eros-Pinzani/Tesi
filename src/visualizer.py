@@ -34,14 +34,34 @@ from matplotlib.artist import Artist  # Tipo base di tutti gli elementi disegnab
 from environment import Environment  # Per disegnare confini e ostacoli
 from lidar import Lidar  # Tipo del sensore per visualizzazione raggi
 import shutil  # Per pulire cartelle di output delle immagini
+# Nuovi import per ICP grid
+from typing import Dict
+from icp import run_icp_over_history  # per costruire le traiettorie stimate ICP
+
+# Eccezioni comuni gestite in modo sicuro (piu' strette di Exception)
+COMMON_EXC = (AttributeError, ValueError, TypeError, RuntimeError)
 
 
 # Helper per rimuovere in sicurezza un artista matplotlib (gestisce None ed eccezioni)
 def _safe_remove_artist(artist: Optional[object]):
     """Prova a rimuovere un artista (patch/annotazione ecc.) ignorando errori e None."""
     if artist is not None and hasattr(artist, 'remove'):
-        with suppress(Exception):
+        with suppress(*COMMON_EXC):
             artist.remove()  # type: ignore[attr-defined]
+
+
+def _clear_artists(artists: Optional[List[Artist]]):
+    """Rimuove tutti gli artisti in lista e la svuota in-place (ignora errori)."""
+    if not artists:
+        return
+    try:
+        for a in list(artists):
+            _safe_remove_artist(a)
+    finally:
+        try:
+            artists.clear()
+        except COMMON_EXC:
+            pass
 
 
 def _rect_dims_from_radius(robot_radius: float):
@@ -501,20 +521,20 @@ def show_trajectories_carousel(
     if isinstance(lidar, (list, tuple)):
         assert len(lidar) == len(histories), "lidar (lista) deve avere stessa lunghezza di histories"
 
+    # Consuma parametri non ancora usati (API futura) per evitare warning di variabili inutilizzate
+    _ = save_each
+    _ = show_legend
+    _ = show_lidar
+    _ = lidar_every
+
     # Normalizza dts a lista per uso uniforme
     if dts is None:
         dts_resolved = [1.0] * len(histories)
-    elif isinstance(dts, (list, tuple, np.ndarray)):
+    elif isinstance(dts, (list, tuple)):
         assert len(dts) == len(histories), "dts deve avere stessa lunghezza di histories"
         dts_resolved = [float(x) for x in dts]
     else:
         dts_resolved = [float(dts)] * len(histories)
-
-    def _resolve_show_every(idx: int) -> int:
-        """Ritorna lo step da usare per la traiettoria idx (singolo valore o per-traiettoria)."""
-        if isinstance(show_orient_every, (list, tuple, np.ndarray)):
-            return max(1, int(show_orient_every[idx]))
-        return max(1, int(show_orient_every))
 
     def _resolve_env(idx: int) -> Optional[Environment]:
         """Ritorna l'Environment per la traiettoria idx (singolo o per-traiettoria)."""
@@ -532,318 +552,330 @@ def show_trajectories_carousel(
             return lidar[idx]
         return lidar
 
-    # Figura principale (spazio extra sotto per i pulsanti)
-    fig, ax = plt.subplots(figsize=(7, 7))
-    plt.subplots_adjust(bottom=0.18)
+    # Figura 2x3; useremo 5 assi, lasciando l'ultimo vuoto (opzionale riquadro info)
+    fig, axes = plt.subplots(2, 3, figsize=(12, 8))
+    plt.subplots_adjust(bottom=0.16, wspace=0.25, hspace=0.28)
+    ax_real = axes[0, 0]
+    ax_raw_none = axes[0, 1]
+    ax_raw_odo = axes[0, 2]
+    ax_filt_none = axes[1, 0]
+    ax_filt_odo = axes[1, 1]
+    ax_info = axes[1, 2]
+    ax_info.axis('off')
 
-    # Legenda esplicativa in alto a sinistra (se richiesta)
-    if show_legend:
-        legend_text = (
-            "Legenda:\n"
-            "t: tempo [s]\n"
-            "v: velocità lineare [m/s]\n"
-            "ω: velocità angolare [rad/s]\n"
-            "x, y: posizione [m]\n"
-            "α: orientamento [rad]"
-        )
-        fig.text(
-            0.02, 0.96, legend_text,
-            ha='left', va='top', fontsize=9,
-            bbox=dict(boxstyle='round', facecolor='white', alpha=0.85, edgecolor='0.7'),
-        )
-
-    # Stato del viewer
-    state = {"idx": 0, "show_info": bool(show_info), "playing": False, "frame": 0, "end_mark_drawn": False}
+    # Stato e cache
+    state = {"idx": 0, "playing": False, "frame": 0}
+    cache: Dict[int, Dict[str, np.ndarray]] = {}
     info_artist: Optional[Text] = None
-    moving_artists: List[Artist] = []
-    moving_lidar_artists: List[Artist] = []
     err_artist: Optional[Text] = None
-    static_start_artists: List[Artist] = []  # fantasma start (verde)
-    static_end_artists: List[Artist] = []    # fantasma end (rosso), mostrato solo a fine traiettoria
 
-    def _clear_artists(lst):
-        """Rimuove e svuota in sicurezza una lista di artisti."""
-        if not lst:
-            return
-        for art in lst:
-            with suppress(AttributeError, ValueError, RuntimeError):
-                art.remove()
-        lst.clear()
-
-    # Timer per avanzamento automatico; l'intervallo verrà aggiornato in base al dt della traiettoria corrente
+    # Timer
     timer = fig.canvas.new_timer(interval=int(dts_resolved[0] * 1000))
 
     def _set_timer_interval_for_current():
-        """Aggiorna l'intervallo del timer in ms in base al dt della traiettoria corrente."""
         cur_dt = max(1e-6, float(dts_resolved[state["idx"]]))
         interval_ms = int(round(cur_dt * 1000))
-        with suppress(AttributeError, ValueError, RuntimeError):
+        try:
             timer.interval = interval_ms
-        with suppress(AttributeError, ValueError, RuntimeError):
             if hasattr(timer, 'set_interval'):
                 timer.set_interval(interval_ms)
-
-    def _clear_robot_moving():
-        nonlocal moving_artists
-        _clear_artists(moving_artists)
-
-    def _clear_lidar_moving():
-        nonlocal moving_lidar_artists
-        _clear_artists(moving_lidar_artists)
-
-    def _clear_static_start():
-        nonlocal static_start_artists
-        _clear_artists(static_start_artists)
-
-    def _clear_static_end():
-        nonlocal static_end_artists
-        _clear_artists(static_end_artists)
-
-    def _draw_static_start(hist: np.ndarray):
-        """Disegna il robot statico di partenza (verde)."""
-        nonlocal static_start_artists
-        _clear_static_start()
-        if hist is None or len(hist) == 0:
-            return
-        r_robot, d_arrow = _robot_scale_from_history(hist)
-        static_start_artists += draw_robot(ax, hist[0], robot_radius=r_robot, dir_len=d_arrow, color='green', arrow_color='orange', center_color='green')
-
-    def _draw_static_end(hist: np.ndarray):
-        """Disegna il robot statico di arrivo (rosso)."""
-        nonlocal static_end_artists
-        _clear_static_end()
-        if hist is None or len(hist) == 0:
-            return
-        r_robot, d_arrow = _robot_scale_from_history(hist)
-        static_end_artists += draw_robot(ax, hist[-1], robot_radius=r_robot, dir_len=d_arrow, color='red', arrow_color='orange', center_color='red')
-
-    def _draw_lidar_for_pose(pose_k, *, force: bool = True):
-        nonlocal moving_lidar_artists
-        if not show_lidar:
-            return
-        env_cur = _resolve_env(state["idx"])
-        lid = _resolve_lidar(state["idx"])  # per-traiettoria o singolo
-        if env_cur is None or lid is None:
-            return
-        try:
-            # Solo hit reali: disegna raggi+marker esclusivamente verso i punti di impatto
-            hit_pts = lid.scan_hits(pose_k, env_cur, frame='world')
-            if hit_pts is not None and len(hit_pts) > 0:
-                _clear_lidar_moving()
-                moving_lidar_artists = _draw_lidar_rays(ax, pose_k, hit_pts)
-            elif force:
-                # nessun punto: pulisci se richiesto
-                _clear_lidar_moving()
-        except (AttributeError, TypeError, ValueError, RuntimeError):
+        except COMMON_EXC:
             pass
 
-    def _draw_moving_at(k: int, *, update_lidar: bool = True):
-        """Disegna il robot mobile alla posa k. LiDAR aggiornato opzionalmente."""
-        nonlocal moving_artists
-        _clear_robot_moving()
-        hist = histories[state["idx"]]
-        k = int(max(0, min(k, len(hist) - 1)))
+    # Elementi dinamici per ogni pannello
+    artists_real: List[Artist] = []  # robot mobile reale
+    line_raw_none = None
+    line_raw_odo = None
+    line_filt_none = None
+    line_filt_odo = None
+    icp_robot_artists = {"raw_none": [], "raw_odo": [], "none": [], "odo": []}
+
+    def _clear_icp_artists():
+        nonlocal line_raw_none, line_raw_odo, line_filt_none, line_filt_odo
+        for ln in [line_raw_none, line_raw_odo, line_filt_none, line_filt_odo]:
+            if ln is not None and hasattr(ln, 'remove'):
+                try:
+                    ln.remove()
+                except COMMON_EXC:
+                    pass
+        line_raw_none = line_raw_odo = line_filt_none = line_filt_odo = None
+        for k in list(icp_robot_artists.keys()):
+            _clear_artists(icp_robot_artists[k])
+            icp_robot_artists[k] = []
+
+    def _clear_real_artists():
+        nonlocal artists_real
+        _clear_artists(artists_real)
+
+    def _set_common_limits(ax_list, hist: np.ndarray, env: Optional[Environment]):
         r_robot, d_arrow = _robot_scale_from_history(hist)
-        # Colore in base al frame corrente: verde (start), blu (intermedio), rosso (fine)
+        x0, x1, y0, y1 = _compute_axes_limits_with_glyphs(hist, step= max(1, len(hist)), r_robot=r_robot, d_arrow=d_arrow, env=env, fit_to=fit_to)
+        for a in ax_list:
+            a.set_xlim(x0, x1)
+            a.set_ylim(y0, y1)
+            a.set_aspect('equal', 'box')
+            a.grid(False)
+            with suppress(*COMMON_EXC):
+                a.set_xlabel('x [m]')
+                a.set_ylabel('y [m]')
+
+    def _draw_background(ax, hist: np.ndarray, title: str, env: Optional[Environment], draw_line: bool):
+        if env is not None:
+            with suppress(*COMMON_EXC):
+                env.plot(ax=ax)
+        if draw_line:
+            ax.plot(hist[:, 0], hist[:, 1], '-', linewidth=1.2, color='k', zorder=2)
+        ax.set_title(title)
+
+    def _draw_real_robot(k: int):
+        nonlocal artists_real
+        _clear_real_artists()
+        hist = histories[state["idx"]]
+        r_robot, d_arrow = _robot_scale_from_history(hist)
         is_first = (k == 0)
         is_last = (k == len(hist) - 1) if len(hist) > 0 else False
-        if is_first:
-            body_col = 'green'
-            center_col = 'green'
-        elif is_last:
-            body_col = 'red'
-            center_col = 'red'
-        else:
-            body_col = 'tab:blue'
-            center_col = 'orange'
-        moving_artists = draw_robot(ax, hist[k], robot_radius=r_robot, dir_len=d_arrow, color=body_col, arrow_color='orange', center_color=center_col)
-        # Mantieni visibile lo start; mostra l'end solo se siamo all'ultimo frame
-        _draw_static_start(hist)
-        if is_last and not state["end_mark_drawn"]:
-            _draw_static_end(hist)
-            state["end_mark_drawn"] = True
-        if update_lidar:
-            _draw_lidar_for_pose(hist[k], force=False)
+        body_col = 'green' if is_first else ('red' if is_last else 'tab:blue')
+        center_col = 'green' if is_first else ('red' if is_last else 'orange')
+        artists_real = draw_robot(ax_real, hist[k], robot_radius=r_robot, dir_len=d_arrow, color=body_col, arrow_color='orange', center_color=center_col)
 
-    # Nota: nessun "fantasma" nel viewer; lasciati solo nelle immagini salvate.
-
-    # Centralizza la logica di disegno per la traiettoria corrente
+    def _draw_icp_at(k: int, trajs: Dict[str, np.ndarray]):
+        nonlocal line_raw_none, line_raw_odo, line_filt_none, line_filt_odo
+        # Disegna/aggiorna linee parziali
+        def _upd(ax, line, traj, color, label=None):
+            xs = traj[:k+1, 0]
+            ys = traj[:k+1, 1]
+            if line is None:
+                ln, = ax.plot(xs, ys, '-', color=color, linewidth=1.5, label=label)
+                return ln
+            else:
+                try:
+                    line.set_data(xs, ys)
+                    return line
+                except COMMON_EXC:
+                    return line
+        line_raw_none = _upd(ax_raw_none, line_raw_none, trajs['raw_none'], 'tab:blue', label='RAW None')
+        line_raw_odo = _upd(ax_raw_odo, line_raw_odo, trajs['raw_odo'], 'tab:orange', label='RAW Odo')
+        line_filt_none = _upd(ax_filt_none, line_filt_none, trajs['none'], 'tab:green', label='Filt None')
+        line_filt_odo = _upd(ax_filt_odo, line_filt_odo, trajs['odo'], 'tab:red', label='Filt Odo')
+        # Robot sui quattro pannelli (colore coerente)
+        for key, axp, line_col in [
+            ('raw_none', ax_raw_none, 'tab:blue'),
+            ('raw_odo', ax_raw_odo, 'tab:orange'),
+            ('none', ax_filt_none, 'tab:green'),
+            ('odo', ax_filt_odo, 'tab:red'),
+        ]:
+            _clear_artists(icp_robot_artists[key])
+            hist_k = trajs[key]
+            r_robot, d_arrow = _robot_scale_from_history(hist_k)
+            is_first = (k == 0)
+            is_last = (k == len(hist_k) - 1)
+            body_col = 'green' if is_first else ('red' if is_last else line_col)
+            center_col = 'green' if is_first else ('red' if is_last else 'orange')
+            icp_robot_artists[key] = draw_robot(axp, hist_k[k], robot_radius=r_robot, dir_len=d_arrow, color=body_col, arrow_color='orange', center_color=center_col)
 
     def draw_current():
-        nonlocal info_artist, err_artist
-        state["playing"] = False
-        with suppress(Exception):
+        nonlocal info_artist
+        # reset timer
+        try:
             timer.stop()
-        _clear_robot_moving()
-        _clear_lidar_moving()
-        _clear_static_start()
-        _clear_static_end()
-        ax.clear()
-        hist = histories[state["idx"]]
-        title = titles[state["idx"]]
-        n = len(hist)
-        step = _resolve_show_every(state["idx"])
-        env_cur = _resolve_env(state["idx"])
+        except COMMON_EXC:
+            pass
+        state["playing"] = False
+        state["frame"] = 0
+        # Pulizia
+        _clear_real_artists()
+        _clear_icp_artists()
+        for a in [ax_real, ax_raw_none, ax_raw_odo, ax_filt_none, ax_filt_odo]:
+            a.clear()
+        if info_artist is not None:
+            try:
+                info_artist.remove()
+            except COMMON_EXC:
+                pass
+            info_artist = None
         # Pulisci eventuale errore precedente
+        nonlocal err_artist
         err_artist = _update_error_artist(fig, err_artist, None)
 
-        _plot_static_trajectory_on_axes(ax, hist, step=step, title=title, include_title=True, include_axis_labels=True, draw_glyphs=False, environment=env_cur, fit_to=fit_to)
+        # Dati correnti
+        idxc = state["idx"]
+        hist = np.asarray(histories[idxc], dtype=float)
+        title = titles[idxc]
+        env_cur = _resolve_env(idxc)
+        lid_cur = _resolve_lidar(idxc)
 
-        if state["show_info"]:
-            idxc = state["idx"]
-            dt_cur = dts_resolved[idxc]
-            last_draw_idx = ((n - 1) // step) * step if n > 0 else 0
+        # Background + limiti coerenti
+        _draw_background(ax_real, hist, f"Reale – {title}", env_cur, draw_line=True)
+        _draw_background(ax_raw_none, hist, "ICP RAW (init=None)", env_cur, draw_line=False)
+        _draw_background(ax_raw_odo, hist, "ICP RAW (init=odo)", env_cur, draw_line=False)
+        _draw_background(ax_filt_none, hist, "ICP Filtrato (init=None)", env_cur, draw_line=False)
+        _draw_background(ax_filt_odo, hist, "ICP Filtrato (init=odo)", env_cur, draw_line=False)
+        _set_common_limits([ax_real, ax_raw_none, ax_raw_odo, ax_filt_none, ax_filt_odo], hist, env_cur)
+
+        # Cache ICP
+        if idxc not in cache:
+            info_artist = fig.text(0.5, 0.02, f"Calcolo ICP per: {title}...", ha='center', va='bottom', fontsize=10)
+            fig.canvas.draw_idle()
+            pre = None  # nessun precomputato supportato (parametro rimosso)
+            cache[idxc] = _compute_icp_trajectories_for_case(hist, lid_cur, env_cur)
+            if info_artist is not None:
+                try:
+                    info_artist.remove()
+                except COMMON_EXC:
+                    pass
+                info_artist = None
+        trajs = cache[idxc]
+
+        # Disegna frame 0
+        _draw_real_robot(0)
+        _draw_icp_at(0, trajs)
+
+        # Info opzionale (tempo e stato) mostrato nel pannello info
+        if show_info:
+            dt_cur = float(dts_resolved[idxc])
             cmds = commands_list[idxc] if commands_list is not None else None
-            info_text = _build_info_text(hist, k_pose=int(last_draw_idx), dt=float(dt_cur), commands=cmds, use_cmd_of_prev=False, show_next_pose=True)
-            info_artist = _update_info_artist(fig, info_artist, info_text)
-        else:
-            _safe_remove_artist(info_artist)
-            info_artist = None
+            info_text = _build_info_text(hist, k_pose=0, dt=dt_cur, commands=cmds, use_cmd_of_prev=False, show_next_pose=False)
+            info_artist = fig.text(0.98, 0.96, info_text, ha='right', va='top', fontsize=9,
+                                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.85, edgecolor='0.7'))
 
-        state["frame"] = 0
-        # Disegna lo start verde; l'end rosso comparirà solo alla fine
-        _draw_static_start(hist)
-        state["end_mark_drawn"] = False
-        # Robot mobile al frame 0 + LiDAR se conforme a lidar_every
-        should_update_lidar = (0 % max(1, int(lidar_every)) == 0)
-        _draw_moving_at(0, update_lidar=should_update_lidar)
         _set_timer_interval_for_current()
         fig.canvas.draw_idle()
 
-        if save_each:
-            fig_save, ax_save = plt.subplots(figsize=(7, 7))
-            _plot_static_trajectory_on_axes(ax_save, hist, step=step, title=title, include_title=True, include_axis_labels=True, draw_glyphs=True, environment=env_cur, fit_to=fit_to)
-            out_path = _default_save_path(title, subfolder='trajectories')
-            fig_save.savefig(out_path, dpi=120, bbox_inches='tight')
-            plt.close(fig_save)
-
     def _stop_if_collision_reached(next_k: int) -> bool:
-        """Se c'è una collisione definita e la raggiungiamo, ferma il player, mostra il messaggio e ritorna True."""
-        nonlocal err_artist, moving_artists, moving_lidar_artists
-        idxc = state["idx"]
+        """Se definita collisione per il caso corrente e la raggiungiamo, ferma e mostra overlay."""
+        nonlocal err_artist
         if stop_indices is None:
             return False
-        stop_k = stop_indices[idxc]
+        idxc = state["idx"]
+        stop_k = stop_indices[idxc] if idxc < len(histories) else None
         if stop_k is None:
             return False
         if next_k >= int(stop_k):
-            # Fermati esattamente al frame di collisione; disegna alla posa interpolata appena prima dell'impatto
-            kcol = int(stop_k)
+            # Disegna posa interpolata per pannello reale
             hist = histories[idxc]
-            # Frazione di collisione (se fornita), altrimenti 1.0 (urto esattamente su kcol)
-            frac = 1.0 if stop_fractions is None or stop_fractions[idxc] is None else float(stop_fractions[idxc])
-            # Disegna alla posa tra kcol-1 e kcol (o esattamente su kcol se kcol==0)
+            kcol = int(stop_k)
+            frac = 1.0
+            if stop_fractions is not None and idxc < len(stop_fractions) and stop_fractions[idxc] is not None:
+                frac = float(stop_fractions[idxc])
             if kcol >= 1:
-                alpha_safe = max(0.0, min(1.0, frac - 1e-3))  # un pelo prima dell'impatto per evitare compenetrazione visiva
+                alpha_safe = max(0.0, min(1.0, frac - 1e-3))
                 pose = _interp_pose(hist[kcol - 1], hist[kcol], alpha_safe)
-                # Aggiorna moving alla posa interpolata
-                _clear_robot_moving()
-                r_robot, d_arrow = _robot_scale_from_history(hist)
-                moving_artists = draw_robot(ax, pose, robot_radius=r_robot, dir_len=d_arrow, color='tab:blue', arrow_color='orange', center_color='orange')
-                _draw_lidar_for_pose(pose)
-                # In collisione non disegnare l'end rosso
-                _draw_static_start(hist)
-                state["frame"] = kcol  # stato logico fermo a kcol
             else:
-                # Collisione alla posa iniziale
-                _clear_robot_moving()
-                r_robot, d_arrow = _robot_scale_from_history(hist)
-                moving_artists = draw_robot(ax, hist[0], robot_radius=r_robot, dir_len=d_arrow, color='tab:blue', arrow_color='orange', center_color='orange')
-                _draw_lidar_for_pose(hist[0])
-                _draw_static_start(hist)
-                state["frame"] = 0
-            # Mostra messaggio d'errore per questa traiettoria
-            default_msg = "Ostacolo lungo la traiettoria"
-            msg = (error_messages[idxc] if (error_messages is not None) else default_msg)
+                pose = np.asarray(hist[0], dtype=float)
+            # aggiorna robot reale e pannelli ICP al frame di collisione
+            # reale
+            _clear_artists(artists_real)
+            r_robot, d_arrow = _robot_scale_from_history(hist)
+            is_first = (kcol == 0)
+            body_col = 'green' if is_first else 'tab:blue'
+            center_col = 'green' if is_first else 'orange'
+            artists_real.extend(draw_robot(ax_real, pose, robot_radius=r_robot, dir_len=d_arrow, color=body_col, arrow_color='orange', center_color=center_col))
+            # icp: taglia a kcol
+            trajs = cache.get(idxc)
+            if trajs is not None:
+                kcut = int(min(kcol, len(hist) - 1))
+                _draw_icp_at(kcut, trajs)
+            # overlay messaggio
+            msg = None
+            if error_messages is not None and idxc < len(error_messages) and error_messages[idxc]:
+                msg = error_messages[idxc]
+            if not msg:
+                msg = "Ostacolo lungo la traiettoria"
             err_artist = _update_error_artist(fig, err_artist, msg)
-            # Metti in pausa e aggiorna pulsante
+            # ferma timer e reset play label
             state["playing"] = False
-            with suppress(AttributeError, RuntimeError, ValueError):
+            try:
                 timer.stop()
+            except COMMON_EXC:
+                pass
+            _set_play_label('▶ Play')
             fig.canvas.draw_idle()
             return True
         return False
 
     def _on_timer():
-        nonlocal info_artist, err_artist
+        nonlocal info_artist
         idxc = state["idx"]
         hist = histories[idxc]
         n = len(hist)
         k_next = state["frame"] + 1
-        # Controlla collisione prima di avanzarecas
+        # collisione?
         if _stop_if_collision_reached(k_next):
             return
         if k_next >= n:
             state["playing"] = False
-            with suppress(AttributeError, RuntimeError, ValueError):
+            try:
                 timer.stop()
+            except COMMON_EXC:
+                pass
             _set_play_label('▶ Play')
             return
-        # Avanza frame e aggiorna
         state["frame"] = k_next
-        # Robot ogni frame
-        _draw_moving_at(k_next, update_lidar=False)
-        # LiDAR solo ogni N frame
-        if int(k_next) % max(1, int(lidar_every)) == 0:
-            _draw_lidar_for_pose(hist[k_next], force=True)
-        if state["show_info"]:
-            with suppress(AttributeError, TypeError, ValueError):
+        _draw_real_robot(k_next)
+        trajs = cache[idxc]
+        _draw_icp_at(k_next, trajs)
+        if show_info:
+            try:
                 dt_cur = float(dts_resolved[idxc])
                 cmds = commands_list[idxc] if commands_list is not None else None
-                info_text = _build_info_text(hist, k_pose=int(k_next), dt=dt_cur, commands=cmds, use_cmd_of_prev=True, show_next_pose=False)
-                info_artist = _update_info_artist(fig, info_artist, info_text)
+                info_text = _build_info_text(np.asarray(hist), k_pose=int(k_next), dt=dt_cur, commands=cmds, use_cmd_of_prev=True, show_next_pose=False)
+                if info_artist is not None:
+                    info_artist.set_text(info_text)
+                else:
+                    info_artist = fig.text(0.98, 0.96, info_text, ha='right', va='top', fontsize=9,
+                                           bbox=dict(boxstyle='round', facecolor='white', alpha=0.85, edgecolor='0.7'))
+            except COMMON_EXC:
+                pass
         fig.canvas.draw_idle()
 
     timer.add_callback(_on_timer)
 
-    # Pulsanti con icone Unicode (compatibili su Windows)
-    ax_prev = fig.add_axes((0.12, 0.05, 0.18, 0.08))
+    # Pulsanti
+    ax_prev = fig.add_axes((0.14, 0.04, 0.18, 0.07))
     btn_prev = Button(ax_prev, '◀◀ Precedente')
-
-    ax_play = fig.add_axes((0.34, 0.05, 0.18, 0.08))
+    ax_play = fig.add_axes((0.41, 0.04, 0.18, 0.07))
     btn_play = Button(ax_play, '▶ Play')
-
-    ax_next = fig.add_axes((0.56, 0.05, 0.18, 0.08))
+    ax_next = fig.add_axes((0.68, 0.04, 0.18, 0.07))
     btn_next = Button(ax_next, 'Successivo ▶▶')
 
     def _set_play_label(text: str):
-        with suppress(AttributeError, RuntimeError, ValueError):
+        try:
             btn_play.label.set_text(text)
+        except COMMON_EXC:
+            pass
 
     def _navigate(delta: int):
-        """Cambia traiettoria (delta=-1 precedente, +1 successiva) e ridisegna."""
         state["idx"] = (state["idx"] + int(delta)) % len(histories)
         state["playing"] = False
-        with suppress(AttributeError, RuntimeError, ValueError):
+        try:
             timer.stop()
+        except COMMON_EXC:
+            pass
         _set_play_label('▶ Play')
         draw_current()
 
     def on_play(_event):
-        """Toggle Play/Pausa: avvia/ferma il timer e aggiorna l'etichetta del pulsante."""
-        # Se già raggiunta collisione, resta in pausa
-        if stop_indices is not None:
-            stop_k = stop_indices[state["idx"]]
-            if stop_k is not None and state["frame"] >= int(stop_k):
-                return
         if not state["playing"]:
             state["playing"] = True
             _set_timer_interval_for_current()
-            with suppress(AttributeError, RuntimeError, ValueError):
+            try:
                 timer.start()
+            except COMMON_EXC:
+                pass
             _set_play_label('▮▮ Pausa')
         else:
             state["playing"] = False
-            with suppress(AttributeError, RuntimeError, ValueError):
+            try:
                 timer.stop()
+            except COMMON_EXC:
+                pass
             _set_play_label('▶ Play')
 
-    # Collega i pulsanti
-    btn_prev.on_clicked(lambda _event: _navigate(-1))
+    btn_prev.on_clicked(lambda _e: _navigate(-1))
     btn_play.on_clicked(on_play)
-    btn_next.on_clicked(lambda _event: _navigate(+1))
+    btn_next.on_clicked(lambda _e: _navigate(+1))
 
-    # Disegna subito la prima traiettoria e mostra
+    # Primo disegno e show
     draw_current()
     plt.show()
 
@@ -861,22 +893,10 @@ def save_trajectories_images(
     progress_cb: Optional[callable] = None,
     quiet: bool = True,
 ):
-    """Salva PNG per ciascuna traiettoria, con simboli del robot (inclusi start verde, intermedi blu e end rosso).
-
-    - histories: lista di array (N_i,3) per ciascuna traiettoria
-    - titles: lista di titoli per i file
-    - show_orient_every: passo con cui disegnare i simboli lungo la traiettoria (può essere lista per-caso)
-    - environment: singolo Environment o lista per-caso; se fornito, disegna bounds/ostacoli sullo sfondo
-    - fit_to: 'trajectory' o 'environment'
-    - progress_cb: funzione opzionale (cur, total) chiamata dopo ogni salvataggio
-    - quiet: True per non stampare i path dei file salvati
-    """
-    assert len(histories) == len(titles) and len(histories) > 0, "Liste vuote o di diversa lunghezza"
-    total = len(histories)
+    """Salva PNG per ciascuna traiettoria con simboli del robot sovrapposti."""
+    assert len(histories) == len(titles) and len(histories) > 0
     if isinstance(show_orient_every, (list, tuple, np.ndarray)):
-        assert len(show_orient_every) == len(histories), "show_orient_every deve avere stessa lunghezza di histories"
-
-    # Consuma error_messages per compatibilità API (non usato in questo save batch)
+        assert len(show_orient_every) == len(histories)
     if error_messages is not None:
         _ = error_messages
 
@@ -889,26 +909,25 @@ def save_trajectories_images(
         if environment is None:
             return None
         if isinstance(environment, (list, tuple)):
-            assert len(environment) == len(histories), "environment (lista) deve avere stessa lunghezza di histories"
+            assert len(environment) == len(histories)
             return environment[idx]
         return environment
 
+    total = len(histories)
     for i, (hist, title_str) in enumerate(zip(histories, titles), start=1):
         fig, ax = plt.subplots(figsize=(7, 7))
         step = _resolve_show_every(i - 1)
         env_cur = _resolve_env(i - 1)
-        # Disegno statico completo con "fantasmi"
-        _plot_static_trajectory_on_axes(
-            ax, hist, step=step, title=None, include_title=False, include_axis_labels=False,
-            draw_glyphs=True, environment=env_cur, fit_to=fit_to,
-        )
+        _plot_static_trajectory_on_axes(ax, hist, step=step, title=title_str, include_title=True, include_axis_labels=True, environment=env_cur, fit_to=fit_to)
         out_path = _default_save_path(title_str, subfolder='trajectories')
         fig.savefig(out_path, dpi=120, bbox_inches='tight')
         if not quiet:
             print(f"[save_trajectories_images] Salvato: {out_path}")
         if callable(progress_cb):
-            with suppress(TypeError, ValueError, RuntimeError):
+            try:
                 progress_cb(i, total)
+            except Exception:
+                pass
         plt.close(fig)
 
 
@@ -921,47 +940,15 @@ def save_lidar_scans_images(
     *,
     interval_s: float = 1.0,
     fit_to: str = 'environment',
-    show_info: bool = True,
     progress_cb: Optional[callable] = None,
     quiet: bool = True,
 ) -> None:
-    """Salva immagini delle scansioni LiDAR a intervalli regolari lungo una singola traiettoria.
-
-    Visualizza gli ostacoli/bounds dell'ambiente come sfondo e, sopra, il robot alla posa corrente
-    e le linee dei raggi che colpiscono (hit). Niente raggi dei miss.
-    Se show_info=True, aggiunge un riquadro con: tempo della scansione e posa (x,y,α).
-    """
+    """Salva immagini dei punti di impatto LiDAR (hit) a intervalli regolari lungo history."""
     if history is None or len(history) == 0:
         return
-
     step_idx = max(1, int(round(float(interval_s) / max(1e-9, float(dt)))))
     n_len = len(history)
     total = len(range(0, n_len, step_idx))
-
-    def _set_axes_limits_scan(ax, env: Optional[Environment], pts: Optional[np.ndarray], use_env_bounds: bool):
-        # Se richiesto e c'è un environment con bounds, usa quelli per includere tutti gli ostacoli
-        if use_env_bounds and env is not None and getattr(env, 'bounds', None) is not None:
-            try:
-                bx, by = env.bounds.exterior.xy  # type: ignore[attr-defined]
-                x_min, x_max = float(np.min(bx)), float(np.max(bx))
-                y_min, y_max = float(np.min(by)), float(np.max(by))
-            except (AttributeError, TypeError, ValueError):
-                x_min = y_min = -1.0; x_max = y_max = 1.0
-        else:
-            # Fallback: usa i soli punti
-            if pts is not None and len(pts) > 0:
-                x_min = float(np.min(pts[:, 0])); x_max = float(np.max(pts[:, 0]))
-                y_min = float(np.min(pts[:, 1])); y_max = float(np.max(pts[:, 1]))
-                if x_max - x_min < 1e-6:
-                    x_min -= 0.5; x_max += 0.5
-                if y_max - y_min < 1e-6:
-                    y_min -= 0.5; y_max += 0.5
-            else:
-                x_min, x_max, y_min, y_max = -1.0, 1.0, -1.0, 1.0
-        pad = 0.04 * max(x_max - x_min, y_max - y_min, 1.0)
-        ax.set_xlim(x_min - pad, x_max + pad)
-        ax.set_ylim(y_min - pad, y_max + pad)
-        ax.set_aspect('equal', 'box')
 
     project_root = Path(__file__).resolve().parents[1]
     out_dir = project_root / 'img' / f"scans/{_slugify(title)}"
@@ -970,83 +957,52 @@ def save_lidar_scans_images(
     for idx_k, k in enumerate(range(0, n_len, step_idx), start=1):
         pose = history[k]
         try:
-            scan_pts, ranges = lidar.scan(pose, environment, return_ranges=True) if environment is not None else (None, None)
-        except (AttributeError, TypeError, ValueError, RuntimeError):
-            scan_pts, ranges = None, None
-        if scan_pts is not None and ranges is not None:
-            mask_hits = np.asarray(ranges) < float(lidar.r_max) - 1e-12
-            hit_points = np.asarray(scan_pts)[mask_hits]
-        else:
-            hit_points = None
+            scan_pts, ranges = lidar.scan(pose, environment, return_ranges=True)
+        except Exception:
+            continue
+        scan_pts = np.asarray(scan_pts)
+        ranges = np.asarray(ranges)
+        mask_hit = ranges < float(lidar.r_max) - 1e-12
+        hits = scan_pts[mask_hit]
 
-        fig2, ax2 = plt.subplots(figsize=(7, 7))
+        fig, ax = plt.subplots(figsize=(7, 7))
         if environment is not None:
-            with suppress(AttributeError, TypeError, ValueError):
-                environment.plot(ax=ax2)
-        # Limiti assi: controllati da fit_to ('environment' vs 'points')
-        _set_axes_limits_scan(ax2, environment, hit_points, use_env_bounds=(str(fit_to).lower() == 'environment'))
+            with suppress(Exception):
+                environment.plot(ax=ax)
+        # Limiti: preferisci bounds ambiente
+        if environment is not None and getattr(environment, 'bounds', None) is not None:
+            try:
+                bx, by = environment.bounds.exterior.xy  # type: ignore[attr-defined]
+                x_min, x_max = float(np.min(bx)), float(np.max(bx))
+                y_min, y_max = float(np.min(by)), float(np.max(by))
+            except Exception:
+                x_min = y_min = -1.0; x_max = y_max = 1.0
+        else:
+            if hits.size > 0:
+                x_min, x_max = float(np.min(hits[:, 0])), float(np.max(hits[:, 0]))
+                y_min, y_max = float(np.min(hits[:, 1])), float(np.max(hits[:, 1]))
+            else:
+                x_min = y_min = -1.0; x_max = y_max = 1.0
+        pad = 0.04 * max(x_max - x_min, y_max - y_min, 1.0)
+        ax.set_xlim(x_min - pad, x_max + pad)
+        ax.set_ylim(y_min - pad, y_max + pad)
+        ax.set_aspect('equal', 'box')
 
-        # Disegna le linee dei raggi SOLO verso i punti di impatto (hit)
-        if hit_points is not None and len(hit_points) > 0:
-            _draw_lidar_rays(ax2, pose, hit_points, ray_color='tab:red', hit_marker_color='tab:red', alpha=0.40)
+        # Disegna raggi e hit
+        x0, y0, _ = map(float, pose)
+        if hits.size > 0:
+            for px, py in hits:
+                ax.plot([x0, float(px)], [y0, float(py)], color='tab:red', alpha=0.35, linewidth=0.8)
+            ax.scatter(hits[:, 0], hits[:, 1], s=6, c='tab:red', alpha=0.65)
 
-        # Colori del robot per prima/ultima scansione salvata
-        last_k = ((n_len - 1) // step_idx) * step_idx
-        is_first = (k == 0)
-        is_last = (k == last_k)
-        body_col = 'green' if is_first else ('red' if is_last else 'tab:blue')
-        center_col = 'green' if is_first else ('red' if is_last else 'orange')
-
-        # Disegna il robot alla posa corrente, con scala coerente all'estensione degli assi
-        try:
-            x0, x1 = ax2.get_xlim(); y0, y1 = ax2.get_ylim()
-            ref = max(float(x1 - x0), float(y1 - y0), 1.0)
-            robot_radius = max(0.02, 0.012 * ref)
-            dir_len = 2.5 * robot_radius
-        except (AttributeError, TypeError, ValueError):
-            robot_radius = 0.08
-            dir_len = 2.5 * robot_radius
-        draw_robot(ax2, pose, robot_radius=robot_radius, dir_len=dir_len, color=body_col, arrow_color='orange', center_color=center_col)
-
-        # Rimuovi ogni elemento di contorno/assi e legende per eliminare spazi bianchi
-        ax2.set_axis_off()
-        with suppress(Exception):
-            leg = ax2.get_legend()
-            if leg is not None:
-                leg.remove()
-        with suppress(Exception):
-            ax2.margins(0)
-        with suppress(Exception):
-            fig2.subplots_adjust(left=0, right=1, top=1, bottom=0)
-
-        # Overlay informativo opzionale (solo tempo e posa) ancorato agli assi per non espandere il bbox
-        if show_info:
-            t = float(k) * float(dt)
-            x, y, th = map(float, pose)
-            th_deg = (np.degrees(th) + 360.0) % 360.0
-            info_text = (
-                f"t={t:.2f} s\n"
-                f"x={x:.2f} m, y={y:.2f} m, α={th_deg:.0f}°"
-            )
-            ax2.text(
-                0.98, 0.98, info_text,
-                transform=ax2.transAxes,
-                ha='right', va='top', fontsize=9,
-                bbox=dict(boxstyle='round', facecolor='white', alpha=0.85, edgecolor='0.7')
-            )
-
-        # Salvataggio
-        t = float(k) * float(dt)
-        filename_base = f"scan_t{t:.2f}s"
-        stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-        out_path_pts = out_dir / f"{_slugify(title)}_{filename_base}_points_{stamp}.png"
-        fig2.savefig(out_path_pts, dpi=120, bbox_inches='tight', pad_inches=0.01)
+        out_path = out_dir / f"{_slugify(title)}_t{float(k)*float(dt):.2f}s_points_{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"
+        fig.savefig(out_path, dpi=120, bbox_inches='tight')
         if not quiet:
-            print(f"[save_lidar_scans_images] Salvato: {out_path_pts}")
+            print(f"[save_lidar_scans_images] Salvato: {out_path}")
         if callable(progress_cb):
-            with suppress(TypeError, ValueError, RuntimeError):
+            with suppress(Exception):
                 progress_cb(idx_k, total)
-        plt.close(fig2)
+        plt.close(fig)
 
 
 def save_lidar_polar_images(
@@ -1061,22 +1017,17 @@ def save_lidar_polar_images(
     progress_cb: Optional[callable] = None,
     quiet: bool = True,
 ) -> None:
-    """Salva grafici r(θ) delle scansioni LiDAR lungo una traiettoria.
-
-    - Asse x: θ (angolo relativo del raggio rispetto al frame del LiDAR), ora in gradi 0..360
-    - Asse y: r (distanza misurata), in metri
-    - Mostra i colpi reali (hit) e, opzionalmente, anche i miss (raggi a r_max) con colore differente.
-    """
+    """Salva grafici r(θ) in gradi delle scansioni LiDAR a intervalli regolari."""
     if history is None or len(history) == 0:
         return
     step_idx = max(1, int(round(float(interval_s) / max(1e-9, float(dt)))))
     n_len = len(history)
     total = len(range(0, n_len, step_idx))
 
-    # Precalcolo degli angoli relativi dei raggi (come in Lidar.scan), convertiti in gradi 0..360
+    # Angoli relativi come in Lidar.scan
     half = 0.5 * float(lidar.angle_span)
-    rel_angles = np.linspace(-half, half, num=lidar.n_rays, endpoint=True)
-    rel_angles_deg = (np.degrees(rel_angles) + 360.0) % 360.0
+    rel = np.linspace(-half, half, num=lidar.n_rays, endpoint=True)
+    rel_deg = (np.degrees(rel) + 360.0) % 360.0
 
     project_root = Path(__file__).resolve().parents[1]
     out_dir = project_root / 'img' / f"scans_polar/{_slugify(title)}"
@@ -1086,37 +1037,27 @@ def save_lidar_polar_images(
         pose = history[k]
         try:
             _pts, ranges = lidar.scan(pose, environment, return_ranges=True)
-        except (AttributeError, TypeError, ValueError, RuntimeError):
+        except Exception:
             continue
         ranges = np.asarray(ranges)
         mask_hit = ranges < float(lidar.r_max) - 1e-12
-        mask_miss = ~mask_hit
-        th_hit = rel_angles_deg[mask_hit]
+        th_hit = rel_deg[mask_hit]
         rr_hit = ranges[mask_hit]
-        th_miss = rel_angles_deg[mask_miss]
-        rr_miss = ranges[mask_miss]
+        th_miss = rel_deg[~mask_hit]
+        rr_miss = ranges[~mask_hit]
 
         fig, ax = plt.subplots(figsize=(7, 4))
-        # Punti di hit
         if th_hit.size > 0:
             ax.scatter(th_hit, rr_hit, s=10, c='tab:blue', alpha=0.95, label='hit')
-        # Punti di miss (a r_max)
         if include_misses and th_miss.size > 0:
             ax.scatter(th_miss, rr_miss, s=8, c='tab:gray', alpha=0.6, label='miss (r_max)')
-        ax.set_xlabel("θ [°]")
-        ax.set_ylabel("r [m]")
+        ax.set_xlabel('θ [°]'); ax.set_ylabel('r [m]')
         ax.grid(True, alpha=0.25)
         ax.set_title(f"r(θ) – {title} – t={float(k)*float(dt):.2f} s")
-        # Limiti y: 0..r_max con piccolo margine
-        y_max = float(lidar.r_max)
-        ax.set_ylim(-0.02 * y_max, 1.02 * y_max)
-        # Limiti x in gradi: 0..360
-        ax.set_xlim(0.0 - 1e-3, 360.0 + 1e-3)
-        try:
+        ax.set_ylim(-0.02 * float(lidar.r_max), 1.02 * float(lidar.r_max))
+        ax.set_xlim(-1e-3, 360.0 + 1e-3)
+        with suppress(Exception):
             ax.set_xticks([0, 60, 120, 180, 240, 300, 360])
-        except (TypeError, ValueError):
-            pass
-        # Legenda se almeno una serie è presente
         if (th_hit.size > 0) or (include_misses and th_miss.size > 0):
             ax.legend(loc='upper right', framealpha=0.85, fontsize=8)
         out_path = out_dir / f"{_slugify(title)}_polar_t{float(k)*float(dt):.2f}s_{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"
@@ -1124,12 +1065,12 @@ def save_lidar_polar_images(
         if not quiet:
             print(f"[save_lidar_polar_images] Salvato: {out_path}")
         if callable(progress_cb):
-            with suppress(TypeError, ValueError, RuntimeError):
+            with suppress(Exception):
                 progress_cb(idx_k, total)
         plt.close(fig)
 
 
-# Helper per path immagini ICP (ancorati alla root del progetto)
+# Path/dir per output ICP
 
 def ensure_icp_dirs(*subfolders: str) -> None:
     project_root = Path(__file__).resolve().parents[1]
@@ -1143,3 +1084,148 @@ def icp_out_path(*parts: str) -> str:
     project_root = Path(__file__).resolve().parents[1]
     base = project_root / 'img' / 'icp'
     return str(base.joinpath(*parts))
+
+
+# ---- Supporto per costruire traiettorie ICP accumulate ----
+
+def _angle_from_r(r: np.ndarray) -> float:
+    r = np.asarray(r, dtype=float)
+    return float(np.arctan2(r[1, 0], r[0, 0]))
+
+
+def _accumulate_icp_trajectory(history: np.ndarray, icp_results: List[Dict], key: str) -> np.ndarray:
+    n = int(len(history))
+    if n <= 0:
+        return np.zeros((0, 3), dtype=float)
+    out = np.zeros((n, 3), dtype=float)
+    out[0, :] = np.asarray(history[0], dtype=float)
+    th0 = float(out[0, 2])
+    r_w_prev = np.array([[np.cos(th0), -np.sin(th0)], [np.sin(th0), np.cos(th0)]], dtype=float)
+    by_k: Dict[int, Dict] = {int(r.get('k')): r for r in icp_results}
+    for k in range(1, n):
+        x_prev, y_prev, _ = map(float, out[k - 1])
+        res = by_k.get(k)
+        if res is None or not res.get('ok', False):
+            out[k, :] = out[k - 1]
+            continue
+        block = res.get(key)
+        if not isinstance(block, dict):
+            out[k, :] = out[k - 1]
+            continue
+        r_rel = np.asarray(block.get('R'))
+        t_rel = np.asarray(block.get('t')).reshape(2)
+        if r_rel.shape != (2, 2) or t_rel.shape != (2,):
+            out[k, :] = out[k - 1]
+            continue
+        t_world = r_w_prev @ t_rel
+        x_k = x_prev + float(t_world[0])
+        y_k = y_prev + float(t_world[1])
+        r_w_k = r_w_prev @ r_rel
+        with suppress(Exception):
+            u, _s, vt = np.linalg.svd(r_w_k)
+            r_w_k = u @ vt
+        th_k = float(np.arctan2(r_w_k[1, 0], r_w_k[0, 0]))
+        out[k, 0] = x_k; out[k, 1] = y_k; out[k, 2] = th_k
+        r_w_prev = r_w_k
+    return out
+
+
+def _compute_icp_trajectories_for_case(history: np.ndarray, lidar: Lidar, env: Optional[Environment], *,
+                                        max_correspondence_distance: float = 0.40,
+                                        trim_fraction: float = 0.6,
+                                        damping_enabled: bool = True,
+                                        angle_thresh_deg: float = 10.0,
+                                        struct_ratio_thresh: float = 0.02,
+                                        damp_factor: float = 0.75,
+                                        sliding_filter_enabled: bool = True,
+                                        sliding_cos_threshold: float = 0.985,
+                                        angle_balance_enabled: bool = True,
+                                        angle_bin_deg: float = 8.0,
+                                        angle_max_per_bin: int = 18,
+                                        angle_prefer_far: bool = True,
+                                        use_scipy: bool = True,
+                                        progress_cb: Optional[callable] = None) -> Dict[str, np.ndarray]:
+    if env is None or lidar is None:
+        zero = np.asarray(history, dtype=float).copy()
+        for k in range(1, len(zero)):
+            zero[k, :] = zero[0, :]
+        return {'raw_none': zero.copy(), 'raw_odo': zero.copy(), 'none': zero.copy(), 'odo': zero.copy()}
+    icp_results = run_icp_over_history(
+        np.asarray(history, dtype=float), lidar, env,
+        step=1,
+        max_iterations=40,
+        tolerance=1e-5,
+        max_correspondence_distance=max_correspondence_distance,
+        use_scipy=use_scipy,
+        trim_fraction=trim_fraction,
+        damping_enabled=damping_enabled,
+        angle_thresh_deg=angle_thresh_deg,
+        struct_ratio_thresh=struct_ratio_thresh,
+        damp_factor=damp_factor,
+        sliding_filter_enabled=sliding_filter_enabled,
+        sliding_cos_threshold=sliding_cos_threshold,
+        angle_balance_enabled=angle_balance_enabled,
+        angle_bin_deg=angle_bin_deg,
+        angle_max_per_bin=angle_max_per_bin,
+        angle_prefer_far=angle_prefer_far,
+        progress_cb=progress_cb,
+    )
+    return {
+        'raw_none': _accumulate_icp_trajectory(history, icp_results, 'raw_none'),
+        'raw_odo': _accumulate_icp_trajectory(history, icp_results, 'raw_odo'),
+        'none': _accumulate_icp_trajectory(history, icp_results, 'none'),
+        'odo': _accumulate_icp_trajectory(history, icp_results, 'odo'),
+    }
+
+
+def show_trajectories_icp_grid(
+    histories,
+    titles,
+    *,
+    environment: Optional[Union[Environment, Sequence[Optional[Environment]]]] = None,
+    lidar: Optional[Union[Lidar, Sequence[Optional[Lidar]]]] = None,
+    dts=None,
+    commands_list=None,
+    fit_to: str = 'environment',
+    show_info: bool = True,
+    error_messages: Optional[Sequence[Optional[str]]] = None,
+    stop_indices: Optional[Sequence[Optional[int]]] = None,
+    stop_fractions: Optional[Sequence[Optional[float]]] = None,
+):
+    assert len(histories) == len(titles) and len(histories) > 0
+
+    def _resolve_env(idx: int) -> Optional[Environment]:
+        if environment is None:
+            return None
+        if isinstance(environment, (list, tuple)):
+            assert len(environment) == len(histories)
+            return environment[idx]
+        return environment
+
+    def _resolve_lidar(idx: int) -> Optional[Lidar]:
+        if lidar is None:
+            return None
+        if isinstance(lidar, (list, tuple)):
+            assert len(lidar) == len(histories)
+            return lidar[idx]
+        return lidar
+
+    for idx, (hist, title) in enumerate(zip(histories, titles)):
+        env_cur = _resolve_env(idx)
+        lid_cur = _resolve_lidar(idx)
+        fig, axes = plt.subplots(2, 3, figsize=(12, 8))
+        plt.subplots_adjust(bottom=0.12, wspace=0.25, hspace=0.28)
+        ax_real = axes[0, 0]; ax_raw_none = axes[0, 1]; ax_raw_odo = axes[0, 2]
+        ax_filt_none = axes[1, 0]; ax_filt_odo = axes[1, 1]
+        axes[1, 2].axis('off')
+        _plot_static_trajectory_on_axes(ax_real, np.asarray(hist), step=max(1, int(len(hist))), title=f"Reale – {title}", include_title=True, include_axis_labels=True, environment=env_cur, fit_to='environment')
+        if env_cur is not None and lid_cur is not None:
+            trajs = _compute_icp_trajectories_for_case(np.asarray(hist), lid_cur, env_cur)
+            _plot_static_trajectory_on_axes(ax_raw_none, trajs['raw_none'], step=max(1, int(len(hist))), title="ICP RAW (init=None)", include_title=True, include_axis_labels=True, environment=env_cur, fit_to='environment')
+            _plot_static_trajectory_on_axes(ax_raw_odo, trajs['raw_odo'], step=max(1, int(len(hist))), title="ICP RAW (init=odo)", include_title=True, include_axis_labels=True, environment=env_cur, fit_to='environment')
+            _plot_static_trajectory_on_axes(ax_filt_none, trajs['none'], step=max(1, int(len(hist))), title="ICP Filtrato (init=None)", include_title=True, include_axis_labels=True, environment=env_cur, fit_to='environment')
+            _plot_static_trajectory_on_axes(ax_filt_odo, trajs['odo'], step=max(1, int(len(hist))), title="ICP Filtrato (init=odo)", include_title=True, include_axis_labels=True, environment=env_cur, fit_to='environment')
+        else:
+            ax_raw_none.set_title("ICP RAW (init=None)"); ax_raw_odo.set_title("ICP RAW (init=odo)")
+            ax_filt_none.set_title("ICP Filtrato (init=None)"); ax_filt_odo.set_title("ICP Filtrato (init=odo)")
+        plt.show()
