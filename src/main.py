@@ -179,11 +179,19 @@ def main():
     parser.add_argument("--skip-viewer", action="store_true", help="Non aprire il viewer interattivo")
     parser.add_argument("--scan-interval", type=float, default=1.0, help="Intervallo tra scansioni LiDAR salvate [s]")
     parser.add_argument("--viewer-lidar-every", type=int, default=4, help="Aggiorna LiDAR nel viewer ogni N frame (default 4)")
-    parser.add_argument("--run-icp", action="store_true", help="Esegui ICP su coppie (k-1,k) in frame locale e stampa confronto init=None vs init=odo")
-    parser.add_argument("--viewer-icp-grid", action="store_true", help="Mostra viewer griglia 5 pannelli (reale + 4 ICP) invece del carosello standard")
+    parser.add_argument("--run-icp", action="store_true", help="Esegui ICP su coppie (k-1,k) in frame locale e stampa confronto ICP filtrato vs RAW")
+    parser.add_argument("--viewer-icp-grid", action="store_true", help="[DEPRECATO] Usa --viewer-mode grid al posto di questo flag")
     parser.add_argument("--skip-icp", action="store_true", help="Non eseguire l'ICP prima dell'apertura del viewer")
-    parser.add_argument("--viewer-mode", choices=["grid","carousel"], default="grid", help="Seleziona viewer: 'grid' (ICP a 5 pannelli) o 'carousel' (standard)")
+    parser.add_argument("--viewer-mode", choices=["grid","carousel"], default="carousel", help="Seleziona viewer: 'grid' (ICP a 5 pannelli) o 'carousel' (standard) - default: carousel")
+    parser.add_argument("--quiet", action="store_true", help="Se presente sopprime stampe durante salvataggio immagini (default: stampe attive)")
+    parser.add_argument("--no-icp-verbose", dest="icp_verbose", action="store_false", help="Disabilita stampe dettagliate ICP durante l'esecuzione principale")
+    parser.set_defaults(icp_verbose=True)
     args = parser.parse_args()
+
+    # Compatibilità: se viene passato il flag deprecato, forza viewer_mode a 'grid'
+    if getattr(args, "viewer_icp_grid", False):
+        print("[AVVISO] --viewer-icp-grid è deprecato; usa --viewer-mode grid. Forzo viewer_mode=grid.")
+        args.viewer_mode = "grid"
 
     # Pulisci vecchie immagini per evitare accumulo: trajectories, scans, scans_polar
     try:
@@ -298,7 +306,7 @@ def main():
             environment=envs,
             fit_to='environment',
             progress_cb=progress_cb_fn,
-            quiet=True,
+            quiet=args.quiet,
         )
         # Salva scansioni (punti) e polari per ciascun caso (usa progress globale)
         for save_hist, save_title, save_env, save_lid in zip(histories, titles, envs, lidars):
@@ -307,14 +315,14 @@ def main():
                 interval_s=float(args.scan_interval),
                 fit_to='environment',
                 progress_cb=progress_cb_fn,
-                quiet=True,
+                quiet=args.quiet,
             )
              visualizer.save_lidar_polar_images(
                 save_hist, save_title, save_lid, save_env, dt,
                 interval_s=float(args.scan_interval),
                 include_misses=True,
                 progress_cb=progress_cb_fn,
-                quiet=True,
+                quiet=args.quiet,
             )
 
     if _tqdm is not None:
@@ -410,14 +418,92 @@ def main():
                 if case_pbar is not None:
                     case_pbar.close()
             icp_all_cases.append(res_list)
+            # Stampa riepilogo dettagliato come --run-icp se richiesto
+            if args.icp_verbose:
+                bold = "\033[1m"; reset = "\033[0m"
+                print(f"\n{bold}CASO {idx+1}: {case_title.upper()}{reset}")
+                # seleziona prime 5 e ultime 5
+                first = res_list[:5]
+                last = res_list[-5:]
+                iter_results = first + last
+                # dedup su k preservando ordine
+                seen = set(); dedup = []
+                for r in iter_results:
+                    k = r.get('k')
+                    if k not in seen:
+                        seen.add(k)
+                        dedup.append(r)
+                for res in dedup:
+                    if not res.get('ok', False):
+                        print(f"Coppia {res.get('k')}: punti insufficienti (src={res.get('n_src')}, tgt={res.get('n_tgt')})")
+                        continue
+                    rn = res.get('none', {})
+                    rrn = res.get('raw_none', {})
+                    prefix = f"Coppia {res.get('k')}: "
+                    indent = " " * len(prefix)
+                    if rrn:
+                        print(prefix + f"rmse[ICP]={float(rn.get('rmse', float('nan'))):.4f}, rmse[RAW]={float(rrn.get('rmse', float('nan'))):.4f}")
+                        print(indent + f"it[ICP]={int(rn.get('iterations', 0))}, it[RAW]={int(rrn.get('iterations', 0))}")
+                        print(indent + f"alpha[ICP]={float(rn.get('alpha_deg', 0.0)):.4f} deg, alpha[RAW]={float(rrn.get('alpha_deg', 0.0)):.4f} deg")
+                    else:
+                        print(prefix + f"rmse[ICP]={float(rn.get('rmse', float('nan'))):.4f}")
+                        print(indent + f"it[ICP]={int(rn.get('iterations', 0))}")
+                        print(indent + f"alpha[ICP]={float(rn.get('alpha_deg', 0.0)):.4f} deg")
+                    # Pose Δ in frame k-1
+                    k_idx = int(res.get('k', 0))
+                    if 1 <= k_idx < len(case_hist):
+                        prev_pose = case_hist[k_idx-1]; curr_pose = case_hist[k_idx]
+                        r_gt, t_gt = relative_local_transform(prev_pose, curr_pose)
+                        def _ang_deg(rm):
+                            return 0.0 if rm is None else float(np.degrees(np.arctan2(rm[1, 0], rm[0, 0])))
+                        gt_ax = float(t_gt[0]); gt_ay = float(t_gt[1]); gt_ad = _ang_deg(r_gt)
+                        n_ax = float(np.asarray(rn.get('t', [0,0]))[0]); n_ay = float(np.asarray(rn.get('t', [0,0]))[1]); n_ad = float(rn.get('alpha_deg', 0.0))
+                        print("    Pose:")
+                        print(f"      {'Reali:':<16}Δx={gt_ax:+.3f} m, Δy={gt_ay:+.3f} m, α={gt_ad:+.4f} deg")
+                        print(f"      {'ICP:':<16}Δx={n_ax:+.3f} m, Δy={n_ay:+.3f} m, α={n_ad:+.4f} deg")
+                        if rrn:
+                            rr_t = np.asarray(rrn.get('t', [0,0]))
+                            rn_ax = float(rr_t[0]); rn_ay = float(rr_t[1]); rn_ad = float(rrn.get('alpha_deg', 0.0))
+                            print(f"      {'RAW:':<16}Δx={rn_ax:+.3f} m, Δy={rn_ay:+.3f} m, α={rn_ad:+.4f} deg")
         print("[Esecuzione ICP] Completata. Salvo grafici ICP riassuntivi...")
         # Salvataggio grafici riassuntivi per ogni caso (concept, overlay, convergence, arrows, raw_vs_filtered)
         try:
             visualizer.ensure_icp_dirs('concept', 'overlays', 'convergence', 'arrows', 'raw_vs_filtered')
         except OSError:
             pass
-        # Funzioni icp_plots già importate in testa al file.
-        def _select_icp_representative(case_results: List[dict]):
+        # Salva anche risultati ICP in JSON per il viewer (solo trasformazioni)
+        import json, os
+        def _to_list(mat):
+            return [[float(x) for x in row] for row in np.asarray(mat, dtype=float)]
+        def _vec_list(v):
+            vv = np.asarray(v, dtype=float).reshape(-1)
+            return [float(x) for x in vv[:2]]
+        icp_json = {"cases": []}
+        for case_title, case_results in zip(titles, icp_all_cases):
+            pairs = []
+            for r in case_results:
+                if not r.get('ok'): continue
+                k = int(r.get('k', 0))
+                blk_none = r.get('none'); blk_raw = r.get('raw_none')
+                if not isinstance(blk_none, dict) or not isinstance(blk_raw, dict):
+                    continue
+                pairs.append({
+                    'k': k,
+                    'none': {'R': _to_list(blk_none.get('R')), 't': _vec_list(blk_none.get('t'))},
+                    'raw_none': {'R': _to_list(blk_raw.get('R')), 't': _vec_list(blk_raw.get('t'))},
+                })
+            slug = (case_title.lower().replace(' ', '_').replace('à','a').replace('è','e').replace('é','e'))
+            icp_json['cases'].append({'title': case_title, 'slug': slug, 'pairs': pairs})
+        try:
+            base_dir = os.path.join(os.path.dirname(__file__), '..', 'img', 'icp')
+            os.makedirs(base_dir, exist_ok=True)
+            out_json_path = os.path.join(base_dir, 'icp_results.json')
+            with open(out_json_path, 'w', encoding='utf-8') as fjson:
+                json.dump(icp_json, fjson, ensure_ascii=False, indent=0)
+            print(f"[ICP] Risultati serializzati in: {out_json_path}")
+        except OSError as _e_json:
+            print(f"[ICP] Avviso: non riesco a salvare icp_results.json: {_e_json}")
+        def _select_icp_representative(case_results: List[dict]) -> Optional[dict]:
             cand = [res_item for res_item in case_results if res_item.get('ok')]
             if not cand:
                 return None
@@ -507,21 +593,19 @@ def main():
     # (Opzionale) Esegui ICP in frame locale per confrontare init=None vs init odometrica
     if args.run_icp:
         print("\n========== ICP ==========")
-        # Setup stile evidenziato per intestazioni caso
-        bold = "\033[1m"
-        reset = "\033[0m"
+        # Titoli dei casi
+        bold = "\033[1m"; reset = "\033[0m"
         def _case_title(idx_case: int, title: str) -> str:
-            # Forza sempre bold; se terminale non supporta, rimarrà il testo con sequenza (accettabile) oppure puoi rimuovere
             return f"{bold}CASO {idx_case}: {title.upper()}{reset}"
-        # Legenda dei campi stampati
+        # Legenda semplificata (solo due varianti)
         print(
             "Legenda:\n"
             "- Coppia N: scansioni consecutive (k-1, k) nel frame locale del robot\n"
-            "- Errore medio (rmse) [init=None]: RMSE usando posa iniziale nulla\n"
-            "- Errore medio (rmse) [init=odometria]: RMSE usando posa iniziale da odometria\n"
-            "- Numero iterazioni ICP [..]: iterazioni eseguite dall'algoritmo ICP\n"
-            "- Angolo di rotazione alpha [..] (deg): rotazione stimata tra le due scansioni (in gradi)\n"
-            "- Pose relative (GROUND TRUTH vs ICP [None | Odo] vs ICP RAW [None | Odo]): Δx, Δy (m) e α (deg) nel frame del robot a tempo k-1\n"
+            "- rmse[ICP]: RMSE della variante filtrata (con trimming / sliding / damping) senza init speciale\n"
+            "- rmse[RAW]: RMSE della variante RAW (nessun filtro / damping)\n"
+            "- it[ICP], it[RAW]: iterazioni eseguite\n"
+            "- alpha[ICP], alpha[RAW]: rotazione stimata (deg) nel frame locale\n"
+            "- Pose: confronto Δx, Δy, α (deg) tra GT, ICP filtrato e RAW (tutte nel frame k-1)\n"
         )
         # Parametri ICP uniformi per tutti i casi (damping meno invasivo)
         trim_fraction = 0.6
@@ -603,36 +687,18 @@ def main():
                 if not res.get('ok', False):
                     print(f"Coppia {res['k']}: punti insufficienti (src={res.get('n_src')}, tgt={res.get('n_tgt')})")
                     continue
-                rn = res['none']; ro = res['odo']
-                rrn = res.get('raw_none'); rro = res.get('raw_odo')
+                rn = res['none']
+                rrn = res.get('raw_none')
                 prefix = f"Coppia {res['k']}: "
                 indent = " " * len(prefix)
-                if rrn and rro:
-                    print(
-                        prefix +
-                        f"rmse[None]={rn['rmse']:.4f}, rmse[Odo]={ro['rmse']:.4f}, "
-                        f"rmseRaw[None]={rrn['rmse']:.4f}, rmseRaw[Odo]={rro['rmse']:.4f}"
-                    )
-                    print(
-                        indent +
-                        f"it[None]={rn['iterations']}, it[Odo]={ro['iterations']}, "
-                        f"itRaw[None]={rrn['iterations']}, itRaw[Odo]={rro['iterations']}"
-                    )
-                    print(
-                        indent +
-                        f"alpha[None]={rn['alpha_deg']:.4f} deg, alpha[Odo]={ro['alpha_deg']:.4f} deg, "
-                        f"alphaRaw[None]={rrn['alpha_deg']:.4f} deg, alphaRaw[Odo]={rro['alpha_deg']:.4f} deg"
-                    )
+                if rrn:
+                    print(prefix + f"rmse[ICP]={rn['rmse']:.4f}, rmse[RAW]={rrn['rmse']:.4f}")
+                    print(indent + f"it[ICP]={rn['iterations']}, it[RAW]={rrn['iterations']}")
+                    print(indent + f"alpha[ICP]={rn['alpha_deg']:.4f} deg, alpha[RAW]={rrn['alpha_deg']:.4f} deg")
                 else:
-                    print(
-                        prefix + f"rmse[None]={rn['rmse']:.4f}, rmse[Odo]={ro['rmse']:.4f}"
-                    )
-                    print(
-                        indent + f"it[None]={rn['iterations']}, it[Odo]={ro['iterations']}"
-                    )
-                    print(
-                        indent + f"alpha[None]={rn['alpha_deg']:.4f} deg, alpha[Odo]={ro['alpha_deg']:.4f} deg"
-                    )
+                    print(prefix + f"rmse[ICP]={rn['rmse']:.4f}")
+                    print(indent + f"it[ICP]={rn['iterations']}")
+                    print(indent + f"alpha[ICP]={rn['alpha_deg']:.4f} deg")
                 # Pose
                 k = int(res['k'])
                 if 1 <= k < len(case_hist):
@@ -642,43 +708,66 @@ def main():
                         return 0.0 if rm is None else float(np.degrees(np.arctan2(rm[1, 0], rm[0, 0])))
                     gt_ax = float(t_gt[0]); gt_ay = float(t_gt[1]); gt_ad = _ang_deg(r_gt)
                     n_ax = float(rn['t'][0]); n_ay = float(rn['t'][1]); n_ad = float(rn['alpha_deg'])
-                    o_ax = float(ro['t'][0]); o_ay = float(ro['t'][1]); o_ad = float(ro['alpha_deg'])
                     print("    Pose:")
                     print(f"      {'Reali:':<16}Δx={gt_ax:+.3f} m, Δy={gt_ay:+.3f} m, α={gt_ad:+.4f} deg")
-                    print(f"      {'ICP [None]:':<16}Δx={n_ax:+.3f} m, Δy={n_ay:+.3f} m, α={n_ad:+.4f} deg")
-                    print(f"      {'ICP [Odo]:':<16}Δx={o_ax:+.3f} m, Δy={o_ay:+.3f} m, α={o_ad:+.4f} deg")
-                    if rrn and rro:
+                    print(f"      {'ICP:':<16}Δx={n_ax:+.3f} m, Δy={n_ay:+.3f} m, α={n_ad:+.4f} deg")
+                    if rrn:
                         rn_ax = float(rrn['t'][0]); rn_ay = float(rrn['t'][1]); rn_ad = float(rrn['alpha_deg'])
-                        ro_ax = float(rro['t'][0]); ro_ay = float(rro['t'][1]); ro_ad = float(rro['alpha_deg'])
-                        print(f"      {'ICP RAW [None]:':<16}Δx={rn_ax:+.3f} m, Δy={rn_ay:+.3f} m, α={rn_ad:+.4f} deg")
-                        print(f"      {'ICP RAW [Odo]:':<16}Δx={ro_ax:+.3f} m, Δy={ro_ay:+.3f} m, α={ro_ad:+.4f} deg")
-        # ====== Salvataggio grafici ICP post-process (1,2,3,9,10,14) con progress bar ======
+                        print(f"      {'RAW:':<16}Δx={rn_ax:+.3f} m, Δy={rn_ay:+.3f} m, α={rn_ad:+.4f} deg")
+        # ====== Salvataggio grafici ICP post-process (1,2,3,9,14) con progress bar ======
         try:
             visualizer.ensure_icp_dirs('concept', 'overlays', 'convergence', 'arrows', 'raw_vs_filtered')
         except OSError:
             pass
-        # Funzione per selezionare la coppia "migliore" (piu' informativa) per i grafici:
-        # Criterio: massimizza punteggio = 0.6*|rot_deg| + 0.3*||Δt|| + 0.1*improvement_rmse (raw_none - none)
+        # Salva anche risultati ICP in JSON per il viewer (solo trasformazioni)
+        import json, os
+        def _to_list(mat):
+            return [[float(x) for x in row] for row in np.asarray(mat, dtype=float)]
+        def _vec_list(v):
+            vv = np.asarray(v, dtype=float).reshape(-1)
+            return [float(x) for x in vv[:2]]
+        icp_json = {"cases": []}
+        for case_title, case_results in zip(titles, icp_all_cases):
+            pairs = []
+            for r in case_results:
+                if not r.get('ok'): continue
+                k = int(r.get('k', 0))
+                blk_none = r.get('none'); blk_raw = r.get('raw_none')
+                if not isinstance(blk_none, dict) or not isinstance(blk_raw, dict):
+                    continue
+                pairs.append({
+                    'k': k,
+                    'none': {'R': _to_list(blk_none.get('R')), 't': _vec_list(blk_none.get('t'))},
+                    'raw_none': {'R': _to_list(blk_raw.get('R')), 't': _vec_list(blk_raw.get('t'))},
+                })
+            slug = (case_title.lower().replace(' ', '_').replace('à','a').replace('è','e').replace('é','e'))
+            icp_json['cases'].append({'title': case_title, 'slug': slug, 'pairs': pairs})
+        try:
+            base_dir = os.path.join(os.path.dirname(__file__), '..', 'img', 'icp')
+            os.makedirs(base_dir, exist_ok=True)
+            out_json_path = os.path.join(base_dir, 'icp_results.json')
+            with open(out_json_path, 'w', encoding='utf-8') as fjson:
+                json.dump(icp_json, fjson, ensure_ascii=False, indent=0)
+            print(f"[ICP] Risultati serializzati in: {out_json_path}")
+        except OSError as _e_json:
+            print(f"[ICP] Avviso: non riesco a salvare icp_results.json: {_e_json}")
         def _select_icp_representative(case_results: List[dict]) -> Optional[dict]:
             cand = [res_item for res_item in case_results if res_item.get('ok')]
             if not cand:
                 return None
             def _score(res_item: dict) -> float:
-                # Rotazione in gradi da matrice 2x2, se disponibile
                 rot_deg = 0.0
                 gt_r = res_item.get('gt_R')
                 if gt_r is not None:
                     r_mat = np.asarray(gt_r)
                     if r_mat.shape == (2, 2):
                         rot_deg = abs(float(np.degrees(np.arctan2(r_mat[1, 0], r_mat[0, 0]))))
-                # Traslazione (norma dei primi due componenti), se disponibile
                 trans = 0.0
                 gt_t = res_item.get('gt_t')
                 if gt_t is not None:
                     t = np.asarray(gt_t).reshape(-1)
                     if t.size >= 2:
                         trans = float(np.linalg.norm(t[:2]))
-                # Miglioramento RMSE RAW->filtrato (troncato a >=0)
                 imp = 0.0
                 raw_n = res_item.get('raw_none'); none_f = res_item.get('none')
                 if isinstance(raw_n, dict) and isinstance(none_f, dict):
@@ -688,13 +777,11 @@ def main():
                         imp = diff if diff > 0.0 else 0.0
                 return 0.6*rot_deg + 0.3*trans + 0.1*imp
             return max(cand, key=_score)
-        # Conta totale immagini da produrre (per caso: 1,2,3,9,14)
-        per_case_imgs = 5
-        total_icp_imgs = per_case_imgs * len(icp_all_cases)
-
+        per_case_imgs = 4  # concept, overlays, convergence, raw_vs_filtered; 'arrows' mantiene ma senza Odo
+        total_icp_imgs = per_case_imgs * len(histories)
         if _tqdm is not None:
             with _tqdm(total=total_icp_imgs, desc="Grafici ICP", unit="img", ncols=90) as pbar_icp:
-                for _case_idx, (plot_title, plot_res) in enumerate(zip(titles, icp_all_cases)):
+                for plot_title, plot_res in zip(titles, icp_all_cases):
                     rep = _select_icp_representative(plot_res)
                     if rep is None:
                         pbar_icp.update(per_case_imgs)
@@ -703,7 +790,6 @@ def main():
                     save_concept_correspondences(rep, f"Corrispondenze – {plot_title}", visualizer.icp_out_path('concept', f"{base_slug}_concept.png")); pbar_icp.update(1)
                     save_alignment_overlays(rep, f"Overlay – {plot_title}", visualizer.icp_out_path('overlays', f"{base_slug}_overlays.png")); pbar_icp.update(1)
                     save_convergence_curves(rep, f"Convergenza – {plot_title}", visualizer.icp_out_path('convergence', f"{base_slug}_convergence.png")); pbar_icp.update(1)
-                    save_motion_arrows(rep, f"Δ Pose – {plot_title}", visualizer.icp_out_path('arrows', f"{base_slug}_arrows.png")); pbar_icp.update(1)
                     save_raw_vs_filtered(rep, f"RAW vs Filtrato – {plot_title}", visualizer.icp_out_path('raw_vs_filtered', f"{base_slug}_raw_vs_filtered.png")); pbar_icp.update(1)
         else:
             for plot_title, plot_res in zip(titles, icp_all_cases):
@@ -714,7 +800,6 @@ def main():
                 save_concept_correspondences(rep, f"Corrispondenze – {plot_title}", visualizer.icp_out_path('concept', f"{base_slug}_concept.png"))
                 save_alignment_overlays(rep, f"Overlay – {plot_title}", visualizer.icp_out_path('overlays', f"{base_slug}_overlays.png"))
                 save_convergence_curves(rep, f"Convergenza – {plot_title}", visualizer.icp_out_path('convergence', f"{base_slug}_convergence.png"))
-                save_motion_arrows(rep, f"Δ Pose – {plot_title}", visualizer.icp_out_path('arrows', f"{base_slug}_arrows.png"))
                 save_raw_vs_filtered(rep, f"RAW vs Filtrato – {plot_title}", visualizer.icp_out_path('raw_vs_filtered', f"{base_slug}_raw_vs_filtered.png"))
 
 

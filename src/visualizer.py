@@ -102,7 +102,8 @@ def draw_robot(ax, state, robot_radius=0.1, color='tab:blue', dir_len=None, arro
     width, length = _rect_dims_from_radius(robot_radius)
 
     # Definisco il rettangolo nel frame locale (centro = 0) e applico rotazione+traslazione
-    rect = Rectangle((-length/2.0, -width/2.0), length, width, linewidth=1.0, facecolor=color, alpha=0.3, edgecolor='k', zorder=3)
+    rect = Rectangle((-length / 2.0, -width / 2.0), length, width, linewidth=1.0, facecolor=color, alpha=0.3,
+                     edgecolor='k', zorder=3)
     trans = mtransforms.Affine2D().rotate(th).translate(x, y) + ax.transData
     rect.set_transform(trans)
     ax.add_patch(rect)
@@ -113,10 +114,10 @@ def draw_robot(ax, state, robot_radius=0.1, color='tab:blue', dir_len=None, arro
     wheel_long_frac = 0.8  # posizione lungo il lato lungo (80% della semi-lunghezza)
     x_off = wheel_long_frac * (length / 2.0)
     corners = [
-        ( +x_off, +width/2.0 + w_off),  # lato superiore, estremità destra
-        ( -x_off, +width/2.0 + w_off),  # lato superiore, estremità sinistra
-        ( +x_off, -width/2.0 - w_off),  # lato inferiore, estremità destra
-        ( -x_off, -width/2.0 - w_off),  # lato inferiore, estremità sinistra
+        (+x_off, +width / 2.0 + w_off),  # lato superiore, estremità destra
+        (-x_off, +width / 2.0 + w_off),  # lato superiore, estremità sinistra
+        (+x_off, -width / 2.0 - w_off),  # lato inferiore, estremità destra
+        (-x_off, -width / 2.0 - w_off),  # lato inferiore, estremità sinistra
     ]
     for cx, cy in corners:
         wheel = Circle((cx, cy), w_r, facecolor=wheel_facecolor, edgecolor=wheel_edgecolor, linewidth=1.0, zorder=4)
@@ -179,7 +180,8 @@ def _slugify(text: str) -> str:
 
 # ----------------------- Pulizia output immagini -----------------------
 
-def cleanup_output_images(*, subfolders: Sequence[str] = ("trajectories", "scans", "scans_polar"), remove_root: bool = False) -> None:
+def cleanup_output_images(*, subfolders: Sequence[str] = ("trajectories", "scans", "scans_polar"),
+                          remove_root: bool = False) -> None:
     """Elimina le immagini generate in precedenza sotto img/ per avere solo gli output dell'ultimo run.
 
     - subfolders: sottocartelle di img/ da pulire. Di default: trajectories, scans, scans_polar.
@@ -219,7 +221,8 @@ def _robot_scale_from_history(history):
     return robot_radius, dir_len
 
 
-def _compute_axes_limits_with_glyphs(history, step, r_robot, d_arrow, env: Optional[Environment] = None, *, fit_to: str = 'trajectory'):
+def _compute_axes_limits_with_glyphs(history, step, r_robot, d_arrow, env: Optional[Environment] = None, *,
+                                     fit_to: str = 'trajectory'):
     """Calcola i limiti degli assi includendo corpo, ruote, punte freccia.
 
     fit_to:
@@ -284,16 +287,16 @@ def _compute_axes_limits_with_glyphs(history, step, r_robot, d_arrow, env: Optio
 # Restituisce (r_robot, d_arrow) calcolati per la traiettoria
 
 def _plot_static_trajectory_on_axes(
-    ax,
-    hist: np.ndarray,
-    step: int,
-    title: Optional[str] = None,
-    include_title: bool = True,
-    include_axis_labels: bool = True,
-    *,
-    draw_glyphs: bool = True,
-    environment: Optional[Environment] = None,
-    fit_to: str = 'trajectory',
+        ax,
+        hist: np.ndarray,
+        step: int,
+        title: Optional[str] = None,
+        include_title: bool = True,
+        include_axis_labels: bool = True,
+        *,
+        draw_glyphs: bool = True,
+        environment: Optional[Environment] = None,
+        fit_to: str = 'trajectory',
 ):
     """Disegna lo sfondo dell'ambiente (opzionale), la linea della traiettoria e (opzionalmente) i robot statici sparsi.
 
@@ -320,13 +323,15 @@ def _plot_static_trajectory_on_axes(
             if i == 0:
                 body_col, arr_col, ctr_col = 'green', 'orange', 'green'  # partenza
             elif i == n - 1:
-                body_col, arr_col, ctr_col = 'red', 'orange', 'red'      # arrivo
+                body_col, arr_col, ctr_col = 'red', 'orange', 'red'  # arrivo
             else:
                 body_col, arr_col, ctr_col = 'tab:blue', 'orange', 'orange'  # punti intermedi
-            draw_robot(ax, hist[i], robot_radius=r_robot, dir_len=d_arrow, color=body_col, arrow_color=arr_col, center_color=ctr_col)
+            draw_robot(ax, hist[i], robot_radius=r_robot, dir_len=d_arrow, color=body_col, arrow_color=arr_col,
+                       center_color=ctr_col)
         # Assicura il disegno della posa finale anche se non multipla di step
         if n > 0 and ((n - 1) % step != 0 or n == 1):
-            draw_robot(ax, hist[-1], robot_radius=r_robot, dir_len=d_arrow, color='red', arrow_color='orange', center_color='red')
+            draw_robot(ax, hist[-1], robot_radius=r_robot, dir_len=d_arrow, color='red', arrow_color='orange',
+                       center_color='red')
 
     # Limiti assi calcolati in base alla scelta di fit
     x0, x1, y0, y1 = _compute_axes_limits_with_glyphs(hist, step, r_robot, d_arrow, env=environment, fit_to=fit_to)
@@ -346,13 +351,13 @@ def _plot_static_trajectory_on_axes(
 
 
 def _build_info_text(
-    hist: np.ndarray,
-    k_pose: int,
-    dt: float,
-    commands: Optional[np.ndarray] = None,
-    *,
-    use_cmd_of_prev: bool = True,
-    show_next_pose: bool = False,
+        hist: np.ndarray,
+        k_pose: int,
+        dt: float,
+        commands: Optional[np.ndarray] = None,
+        *,
+        use_cmd_of_prev: bool = True,
+        show_next_pose: bool = False,
 ) -> str:
     """Crea il testo del pannello info (tempo, velocità, posa).
 
@@ -376,7 +381,7 @@ def _build_info_text(
             dx = float(hist[k2][0] - hist[k1][0])
             dy = float(hist[k2][1] - hist[k1][1])
             dth = float(hist[k2][2] - hist[k1][2])
-            v_k = (dx**2 + dy**2) ** 0.5 / dt
+            v_k = (dx ** 2 + dy ** 2) ** 0.5 / dt
             dth = (dth + np.pi) % (2 * np.pi) - np.pi  # normalizza in [-π, π)
             w_k = dth / dt
         else:
@@ -408,8 +413,8 @@ def _update_info_artist(fig, info_artist: Optional[Text], info_text: str) -> Tex
     if info_artist is not None:
         _safe_remove_artist(info_artist)
     return fig.text(
-        0.98,   # allineato a destra
-        0.96,   # alto
+        0.98,  # allineato a destra
+        0.96,  # alto
         info_text,
         ha='right',
         va='top',
@@ -431,7 +436,8 @@ def _update_error_artist(fig, err_artist: Optional[Text], msg: Optional[str]) ->
     return err_artist
 
 
-def _draw_lidar_rays(ax, origin_xy, lidar_points: np.ndarray, *, ray_color: str = 'tab:red', hit_marker_color: str = 'tab:red', alpha: float = 0.35) -> List[Artist]:
+def _draw_lidar_rays(ax, origin_xy, lidar_points: np.ndarray, *, ray_color: str = 'tab:red',
+                     hit_marker_color: str = 'tab:red', alpha: float = 0.35) -> List[Artist]:
     """Disegna i raggi LiDAR come segmenti dall'origine ai punti misurati; ritorna gli artisti per pulizia."""
     x0, y0 = map(float, origin_xy[:2])
     arts: List[Artist] = []
@@ -440,13 +446,16 @@ def _draw_lidar_rays(ax, origin_xy, lidar_points: np.ndarray, *, ray_color: str 
         ln = ax.plot([x0, float(px)], [y0, float(py)], color=ray_color, alpha=alpha, linewidth=0.8, zorder=1.5)[0]
         arts.append(ln)
     # Marker sui punti di impatto (leggeri)
-    scat = ax.scatter(lidar_points[:, 0], lidar_points[:, 1], s=5, c=hit_marker_color, alpha=min(1.0, alpha + 0.20), zorder=2)
+    scat = ax.scatter(lidar_points[:, 0], lidar_points[:, 1], s=5, c=hit_marker_color, alpha=min(1.0, alpha + 0.20),
+                      zorder=2)
     if isinstance(scat, Artist):
         arts.append(scat)
     return arts
 
 
-def plot_trajectory(history, show_orient_every=20, title="Traiettoria del robot", save_path=None, *, environment: Optional[Environment] = None, fit_to: str = 'trajectory', error_message: Optional[str] = None):
+def plot_trajectory(history, show_orient_every=20, title="Traiettoria del robot", save_path=None, *,
+                    environment: Optional[Environment] = None, fit_to: str = 'trajectory',
+                    error_message: Optional[str] = None):
     """Plotta una singola traiettoria e (opzionalmente) salva l'immagine PNG.
 
     Nota: l'overlay d'errore non viene mostrato nelle immagini statiche; il messaggio appare solo nel viewer al momento della collisione.
@@ -456,7 +465,8 @@ def plot_trajectory(history, show_orient_every=20, title="Traiettoria del robot"
         _ = error_message
     fig, ax = plt.subplots(figsize=(7, 7))
     step = max(1, int(show_orient_every))
-    _plot_static_trajectory_on_axes(ax, history, step=step, title=title, include_title=True, include_axis_labels=True, environment=environment, fit_to=fit_to)
+    _plot_static_trajectory_on_axes(ax, history, step=step, title=title, include_title=True, include_axis_labels=True,
+                                    environment=environment, fit_to=fit_to)
     out_path = Path(save_path) if save_path else _default_save_path(title, subfolder='trajectories')
     fig.savefig(out_path, dpi=120, bbox_inches='tight')
     plt.show()
@@ -481,23 +491,23 @@ def _interp_pose(p0, p1, alpha: float):
 
 
 def show_trajectories_carousel(
-    histories,
-    titles,
-    show_orient_every=20,
-    save_each=False,
-    commands_list=None,
-    dts=None,
-    show_info=False,
-    show_legend=True,
-    *,
-    environment: Optional[Union[Environment, Sequence[Optional[Environment]]]] = None,
-    fit_to: str = 'trajectory',
-    error_messages: Optional[Sequence[Optional[str]]] = None,
-    stop_indices: Optional[Sequence[Optional[int]]] = None,
-    stop_fractions: Optional[Sequence[Optional[float]]] = None,
-    lidar: Optional[Union[Lidar, Sequence[Optional[Lidar]]]] = None,
-    show_lidar: bool = True,
-    lidar_every: int = 1,
+        histories,
+        titles,
+        show_orient_every=20,
+        save_each=False,
+        commands_list=None,
+        dts=None,
+        show_info=False,
+        show_legend=True,
+        *,
+        environment: Optional[Union[Environment, Sequence[Optional[Environment]]]] = None,
+        fit_to: str = 'trajectory',
+        error_messages: Optional[Sequence[Optional[str]]] = None,
+        stop_indices: Optional[Sequence[Optional[int]]] = None,
+        stop_fractions: Optional[Sequence[Optional[float]]] = None,
+        lidar: Optional[Union[Lidar, Sequence[Optional[Lidar]]]] = None,
+        show_lidar: bool = True,
+        lidar_every: int = 1,
 ):
     """Viewer interattivo per più traiettorie con pulsanti e Play/Pausa.
 
@@ -509,7 +519,8 @@ def show_trajectories_carousel(
     """
     assert len(histories) == len(titles) and len(histories) > 0, "Liste vuote o di diversa lunghezza"
     if isinstance(show_orient_every, (list, tuple, np.ndarray)):
-        assert len(show_orient_every) == len(histories), "show_orient_every deve avere stessa lunghezza di delle traiettorie"
+        assert len(show_orient_every) == len(
+            histories), "show_orient_every deve avere stessa lunghezza di delle traiettorie"
     if commands_list is not None:
         assert len(commands_list) == len(histories), "commands_list deve avere stessa lunghezza di histories"
     if error_messages is not None:
@@ -552,25 +563,24 @@ def show_trajectories_carousel(
             return lidar[idx]
         return lidar
 
-    # Figura 2x3; useremo 5 assi, lasciando l'ultimo vuoto (opzionale riquadro info)
+    # Figura 2x3 ma nascondiamo i pannelli odometria: useremo solo 3 assi visivi (reale, raw, filtrato) + info
     fig, axes = plt.subplots(2, 3, figsize=(12, 8))
     plt.subplots_adjust(bottom=0.16, wspace=0.25, hspace=0.28)
     ax_real = axes[0, 0]
     ax_raw_none = axes[0, 1]
-    ax_raw_odo = axes[0, 2]
     ax_filt_none = axes[1, 0]
-    ax_filt_odo = axes[1, 1]
     ax_info = axes[1, 2]
+    # Pannelli non usati (odometria) nascosti
+    axes[0, 2].axis('off')
+    axes[1, 1].axis('off')
     ax_info.axis('off')
 
-    # Stato e cache
     state = {"idx": 0, "playing": False, "frame": 0}
     cache: Dict[int, Dict[str, np.ndarray]] = {}
     info_artist: Optional[Text] = None
     err_artist: Optional[Text] = None
 
-    # Timer
-    timer = fig.canvas.new_timer(interval=int(dts_resolved[0] * 1000))
+    timer = fig.canvas.new_timer(interval=100)
 
     def _set_timer_interval_for_current():
         cur_dt = max(1e-6, float(dts_resolved[state["idx"]]))
@@ -582,23 +592,19 @@ def show_trajectories_carousel(
         except COMMON_EXC:
             pass
 
-    # Elementi dinamici per ogni pannello
-    artists_real: List[Artist] = []  # robot mobile reale
+    # Elementi dinamici (solo varianti RAW e Filtrato)
+    artists_real: List[Artist] = []
     line_raw_none = None
-    line_raw_odo = None
     line_filt_none = None
-    line_filt_odo = None
-    icp_robot_artists = {"raw_none": [], "raw_odo": [], "none": [], "odo": []}
+    icp_robot_artists = {"raw_none": [], "none": []}
 
     def _clear_icp_artists():
-        nonlocal line_raw_none, line_raw_odo, line_filt_none, line_filt_odo
-        for ln in [line_raw_none, line_raw_odo, line_filt_none, line_filt_odo]:
+        nonlocal line_raw_none, line_filt_none
+        for ln in [line_raw_none, line_filt_none]:
             if ln is not None and hasattr(ln, 'remove'):
-                try:
+                with suppress(*COMMON_EXC):
                     ln.remove()
-                except COMMON_EXC:
-                    pass
-        line_raw_none = line_raw_odo = line_filt_none = line_filt_odo = None
+        line_raw_none = line_filt_none = None
         for k in list(icp_robot_artists.keys()):
             _clear_artists(icp_robot_artists[k])
             icp_robot_artists[k] = []
@@ -609,7 +615,8 @@ def show_trajectories_carousel(
 
     def _set_common_limits(ax_list, hist: np.ndarray, env: Optional[Environment]):
         r_robot, d_arrow = _robot_scale_from_history(hist)
-        x0, x1, y0, y1 = _compute_axes_limits_with_glyphs(hist, step= max(1, len(hist)), r_robot=r_robot, d_arrow=d_arrow, env=env, fit_to=fit_to)
+        x0, x1, y0, y1 = _compute_axes_limits_with_glyphs(hist, step=max(1, len(hist)), r_robot=r_robot,
+                                                          d_arrow=d_arrow, env=env, fit_to=fit_to)
         for a in ax_list:
             a.set_xlim(x0, x1)
             a.set_ylim(y0, y1)
@@ -636,33 +643,29 @@ def show_trajectories_carousel(
         is_last = (k == len(hist) - 1) if len(hist) > 0 else False
         body_col = 'green' if is_first else ('red' if is_last else 'tab:blue')
         center_col = 'green' if is_first else ('red' if is_last else 'orange')
-        artists_real = draw_robot(ax_real, hist[k], robot_radius=r_robot, dir_len=d_arrow, color=body_col, arrow_color='orange', center_color=center_col)
+        artists_real = draw_robot(ax_real, hist[k], robot_radius=r_robot, dir_len=d_arrow, color=body_col,
+                                  arrow_color='orange', center_color=center_col)
 
     def _draw_icp_at(k: int, trajs: Dict[str, np.ndarray]):
-        nonlocal line_raw_none, line_raw_odo, line_filt_none, line_filt_odo
-        # Disegna/aggiorna linee parziali
-        def _upd(ax, line, traj, color, label=None):
-            xs = traj[:k+1, 0]
-            ys = traj[:k+1, 1]
+        nonlocal line_raw_none, line_filt_none
+
+        def _upd(ax, line, traj, color, label=None, style='-'):
+            xs = traj[:k + 1, 0]
+            ys = traj[:k + 1, 1]
             if line is None:
-                ln, = ax.plot(xs, ys, '-', color=color, linewidth=1.5, label=label)
+                ln, = ax.plot(xs, ys, style, color=color, linewidth=1.5, label=label)
                 return ln
             else:
-                try:
+                with suppress(*COMMON_EXC):
                     line.set_data(xs, ys)
-                    return line
-                except COMMON_EXC:
-                    return line
-        line_raw_none = _upd(ax_raw_none, line_raw_none, trajs['raw_none'], 'tab:blue', label='RAW None')
-        line_raw_odo = _upd(ax_raw_odo, line_raw_odo, trajs['raw_odo'], 'tab:orange', label='RAW Odo')
-        line_filt_none = _upd(ax_filt_none, line_filt_none, trajs['none'], 'tab:green', label='Filt None')
-        line_filt_odo = _upd(ax_filt_odo, line_filt_odo, trajs['odo'], 'tab:red', label='Filt Odo')
-        # Robot sui quattro pannelli (colore coerente)
+                return line
+
+        line_raw_none = _upd(ax_raw_none, line_raw_none, trajs['raw_none'], 'tab:blue', label='RAW')
+        line_filt_none = _upd(ax_filt_none, line_filt_none, trajs['none'], 'tab:green', label='Filtrato')
+        # Rimosso: nessuna traiettoria globale
         for key, axp, line_col in [
             ('raw_none', ax_raw_none, 'tab:blue'),
-            ('raw_odo', ax_raw_odo, 'tab:orange'),
             ('none', ax_filt_none, 'tab:green'),
-            ('odo', ax_filt_odo, 'tab:red'),
         ]:
             _clear_artists(icp_robot_artists[key])
             hist_k = trajs[key]
@@ -671,78 +674,112 @@ def show_trajectories_carousel(
             is_last = (k == len(hist_k) - 1)
             body_col = 'green' if is_first else ('red' if is_last else line_col)
             center_col = 'green' if is_first else ('red' if is_last else 'orange')
-            icp_robot_artists[key] = draw_robot(axp, hist_k[k], robot_radius=r_robot, dir_len=d_arrow, color=body_col, arrow_color='orange', center_color=center_col)
+            icp_robot_artists[key] = draw_robot(axp, hist_k[k], robot_radius=r_robot, dir_len=d_arrow, color=body_col,
+                                                arrow_color='orange', center_color=center_col)
 
     def draw_current():
-        nonlocal info_artist
-        # reset timer
-        try:
+        nonlocal info_artist, err_artist
+        with suppress(*COMMON_EXC):
             timer.stop()
-        except COMMON_EXC:
-            pass
         state["playing"] = False
         state["frame"] = 0
-        # Pulizia
         _clear_real_artists()
         _clear_icp_artists()
-        for a in [ax_real, ax_raw_none, ax_raw_odo, ax_filt_none, ax_filt_odo]:
+        for a in [ax_real, ax_raw_none, ax_filt_none]:
             a.clear()
         if info_artist is not None:
-            try:
-                info_artist.remove()
-            except COMMON_EXC:
-                pass
+            _safe_remove_artist(info_artist)
             info_artist = None
-        # Pulisci eventuale errore precedente
-        nonlocal err_artist
         err_artist = _update_error_artist(fig, err_artist, None)
-
-        # Dati correnti
         idxc = state["idx"]
         hist = np.asarray(histories[idxc], dtype=float)
         title = titles[idxc]
         env_cur = _resolve_env(idxc)
         lid_cur = _resolve_lidar(idxc)
-
-        # Background + limiti coerenti
         _draw_background(ax_real, hist, f"Reale – {title}", env_cur, draw_line=True)
-        _draw_background(ax_raw_none, hist, "ICP RAW (init=None)", env_cur, draw_line=False)
-        _draw_background(ax_raw_odo, hist, "ICP RAW (init=odo)", env_cur, draw_line=False)
-        _draw_background(ax_filt_none, hist, "ICP Filtrato (init=None)", env_cur, draw_line=False)
-        _draw_background(ax_filt_odo, hist, "ICP Filtrato (init=odo)", env_cur, draw_line=False)
-        _set_common_limits([ax_real, ax_raw_none, ax_raw_odo, ax_filt_none, ax_filt_odo], hist, env_cur)
-
-        # Cache ICP
+        _draw_background(ax_raw_none, hist, "ICP RAW", env_cur, draw_line=False)
+        _draw_background(ax_filt_none, hist, "ICP Filtrato", env_cur, draw_line=False)
+        _set_common_limits([ax_real, ax_raw_none, ax_filt_none], hist, env_cur)
         if idxc not in cache:
             info_artist = fig.text(0.5, 0.02, f"Calcolo ICP per: {title}...", ha='center', va='bottom', fontsize=10)
             fig.canvas.draw_idle()
-            pre = None  # nessun precomputato supportato (parametro rimosso)
-            cache[idxc] = _compute_icp_trajectories_for_case(hist, lid_cur, env_cur)
-            if info_artist is not None:
+            # Se esiste JSON precomputato, usalo; altrimenti calcola ora
+            import os, json
+            json_path = os.path.join(os.path.dirname(__file__), '..', 'img', 'icp', 'icp_results.json')
+            icp_res_trajs = None
+            if os.path.exists(json_path):
                 try:
-                    info_artist.remove()
-                except COMMON_EXC:
-                    pass
-                info_artist = None
+                    with open(json_path, 'r', encoding='utf-8') as fj:
+                        data = json.load(fj)
+                    # Trova caso per titolo
+                    slug_case = title.lower().replace(' ', '_').replace('à', 'a').replace('è', 'e').replace('é', 'e')
+                    case = next(
+                        (c for c in data.get('cases', []) if c.get('slug') == slug_case or c.get('title') == title),
+                        None)
+                    if case and case.get('pairs'):
+                        # Accumula traiettoria usando le stesse trasformazioni del JSON
+                        def _acc_from_pairs(hist: np.ndarray, pairs: list, key: str) -> np.ndarray:
+                            n = len(hist)
+                            out = np.zeros((n, 3), dtype=float)
+                            out[0, :] = hist[0]
+                            th0 = float(out[0, 2])
+                            r_w_prev = np.array([[np.cos(th0), -np.sin(th0)], [np.sin(th0), np.cos(th0)]], dtype=float)
+                            by_k = {int(p['k']): p for p in pairs}
+                            for k in range(1, n):
+                                x_prev, y_prev, _ = map(float, out[k - 1])
+                                p = by_k.get(k)
+                                if not p:
+                                    out[k, :] = out[k - 1]
+                                    continue
+                                bk = p.get(key)
+                                if not bk:
+                                    out[k, :] = out[k - 1]
+                                    continue
+                                r_rel = np.asarray(bk['R'], dtype=float)
+                                t_rel = np.asarray(bk['t'], dtype=float).reshape(2)
+                                if r_rel.shape != (2, 2) or t_rel.shape != (2,):
+                                    out[k, :] = out[k - 1]
+                                    continue
+                                # Composizione precedente: world_k = world_{k-1} + R_w_prev * t_rel ; R_w_k = R_w_prev * R_rel
+                                t_world = r_w_prev @ t_rel
+                                x_k = x_prev + float(t_world[0])
+                                y_k = y_prev + float(t_world[1])
+                                r_w_k = r_w_prev @ r_rel
+                                try:
+                                    u, _s, vt = np.linalg.svd(r_w_k)
+                                    r_w_k = u @ vt
+                                except Exception:
+                                    pass
+                                th_k = float(np.arctan2(r_w_k[1, 0], r_w_k[0, 0]))
+                                out[k, :] = [x_k, y_k, th_k]
+                                r_w_prev = r_w_k
+                            return out
+                        pairs = case['pairs']
+                        icp_res_trajs = {
+                            'raw_none': _acc_from_pairs(hist, pairs, 'raw_none'),
+                            'none': _acc_from_pairs(hist, pairs, 'none'),
+                        }
+                except Exception:
+                    icp_res_trajs = None
+            if icp_res_trajs is None:
+                icp_res_trajs = _compute_icp_trajectories_for_case(hist, lid_cur, env_cur)
+            cache[idxc] = icp_res_trajs
+            _safe_remove_artist(info_artist)
+            info_artist = None
         trajs = cache[idxc]
-
-        # Disegna frame 0
         _draw_real_robot(0)
         _draw_icp_at(0, trajs)
-
-        # Info opzionale (tempo e stato) mostrato nel pannello info
         if show_info:
             dt_cur = float(dts_resolved[idxc])
             cmds = commands_list[idxc] if commands_list is not None else None
-            info_text = _build_info_text(hist, k_pose=0, dt=dt_cur, commands=cmds, use_cmd_of_prev=False, show_next_pose=False)
+            info_text = _build_info_text(hist, k_pose=0, dt=dt_cur, commands=cmds, use_cmd_of_prev=False,
+                                         show_next_pose=False)
             info_artist = fig.text(0.98, 0.96, info_text, ha='right', va='top', fontsize=9,
                                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.85, edgecolor='0.7'))
-
         _set_timer_interval_for_current()
         fig.canvas.draw_idle()
 
     def _stop_if_collision_reached(next_k: int) -> bool:
-        """Se definita collisione per il caso corrente e la raggiungiamo, ferma e mostra overlay."""
         nonlocal err_artist
         if stop_indices is None:
             return False
@@ -751,43 +788,35 @@ def show_trajectories_carousel(
         if stop_k is None:
             return False
         if next_k >= int(stop_k):
-            # Disegna posa interpolata per pannello reale
             hist = histories[idxc]
             kcol = int(stop_k)
             frac = 1.0
             if stop_fractions is not None and idxc < len(stop_fractions) and stop_fractions[idxc] is not None:
                 frac = float(stop_fractions[idxc])
             if kcol >= 1:
-                alpha_safe = max(0.0, min(1.0, frac - 1e-3))
-                pose = _interp_pose(hist[kcol - 1], hist[kcol], alpha_safe)
+                pose = _interp_pose(hist[kcol - 1], hist[kcol], max(0.0, min(1.0, frac - 1e-3)))
             else:
                 pose = np.asarray(hist[0], dtype=float)
-            # aggiorna robot reale e pannelli ICP al frame di collisione
-            # reale
             _clear_artists(artists_real)
             r_robot, d_arrow = _robot_scale_from_history(hist)
-            is_first = (kcol == 0)
-            body_col = 'green' if is_first else 'tab:blue'
-            center_col = 'green' if is_first else 'orange'
-            artists_real.extend(draw_robot(ax_real, pose, robot_radius=r_robot, dir_len=d_arrow, color=body_col, arrow_color='orange', center_color=center_col))
-            # icp: taglia a kcol
+            body_col = 'tab:blue'
+            center_col = 'orange'
+            artists_real.extend(
+                draw_robot(ax_real, pose, robot_radius=r_robot, dir_len=d_arrow, color=body_col, arrow_color='orange',
+                           center_color=center_col))
             trajs = cache.get(idxc)
             if trajs is not None:
                 kcut = int(min(kcol, len(hist) - 1))
                 _draw_icp_at(kcut, trajs)
-            # overlay messaggio
             msg = None
             if error_messages is not None and idxc < len(error_messages) and error_messages[idxc]:
                 msg = error_messages[idxc]
             if not msg:
                 msg = "Ostacolo lungo la traiettoria"
             err_artist = _update_error_artist(fig, err_artist, msg)
-            # ferma timer e reset play label
             state["playing"] = False
-            try:
+            with suppress(*COMMON_EXC):
                 timer.stop()
-            except COMMON_EXC:
-                pass
             _set_play_label('▶ Play')
             fig.canvas.draw_idle()
             return True
@@ -799,15 +828,12 @@ def show_trajectories_carousel(
         hist = histories[idxc]
         n = len(hist)
         k_next = state["frame"] + 1
-        # collisione?
         if _stop_if_collision_reached(k_next):
             return
         if k_next >= n:
             state["playing"] = False
-            try:
+            with suppress(*COMMON_EXC):
                 timer.stop()
-            except COMMON_EXC:
-                pass
             _set_play_label('▶ Play')
             return
         state["frame"] = k_next
@@ -815,17 +841,15 @@ def show_trajectories_carousel(
         trajs = cache[idxc]
         _draw_icp_at(k_next, trajs)
         if show_info:
-            try:
-                dt_cur = float(dts_resolved[idxc])
-                cmds = commands_list[idxc] if commands_list is not None else None
-                info_text = _build_info_text(np.asarray(hist), k_pose=int(k_next), dt=dt_cur, commands=cmds, use_cmd_of_prev=True, show_next_pose=False)
-                if info_artist is not None:
-                    info_artist.set_text(info_text)
-                else:
-                    info_artist = fig.text(0.98, 0.96, info_text, ha='right', va='top', fontsize=9,
-                                           bbox=dict(boxstyle='round', facecolor='white', alpha=0.85, edgecolor='0.7'))
-            except COMMON_EXC:
-                pass
+            dt_cur = float(dts_resolved[idxc])
+            cmds = commands_list[idxc] if commands_list is not None else None
+            info_text = _build_info_text(np.asarray(hist), k_pose=int(k_next), dt=dt_cur, commands=cmds,
+                                         use_cmd_of_prev=True, show_next_pose=False)
+            if info_artist is not None:
+                info_artist.set_text(info_text)
+            else:
+                info_artist = fig.text(0.98, 0.96, info_text, ha='right', va='top', fontsize=9,
+                                       bbox=dict(boxstyle='round', facecolor='white', alpha=0.85, edgecolor='0.7'))
         fig.canvas.draw_idle()
 
     timer.add_callback(_on_timer)
@@ -839,18 +863,14 @@ def show_trajectories_carousel(
     btn_next = Button(ax_next, 'Successivo ▶▶')
 
     def _set_play_label(text: str):
-        try:
+        with suppress(*COMMON_EXC):
             btn_play.label.set_text(text)
-        except COMMON_EXC:
-            pass
 
     def _navigate(delta: int):
         state["idx"] = (state["idx"] + int(delta)) % len(histories)
         state["playing"] = False
-        try:
+        with suppress(*COMMON_EXC):
             timer.stop()
-        except COMMON_EXC:
-            pass
         _set_play_label('▶ Play')
         draw_current()
 
@@ -858,17 +878,13 @@ def show_trajectories_carousel(
         if not state["playing"]:
             state["playing"] = True
             _set_timer_interval_for_current()
-            try:
+            with suppress(*COMMON_EXC):
                 timer.start()
-            except COMMON_EXC:
-                pass
             _set_play_label('▮▮ Pausa')
         else:
             state["playing"] = False
-            try:
+            with suppress(*COMMON_EXC):
                 timer.stop()
-            except COMMON_EXC:
-                pass
             _set_play_label('▶ Play')
 
     btn_prev.on_clicked(lambda _e: _navigate(-1))
@@ -883,15 +899,15 @@ def show_trajectories_carousel(
 # ----------------------- API di salvataggio immagini -----------------------
 
 def save_trajectories_images(
-    histories,
-    titles,
-    show_orient_every=20,
-    *,
-    environment: Optional[Union[Environment, Sequence[Optional[Environment]]]] = None,
-    fit_to: str = 'trajectory',
-    error_messages: Optional[Sequence[Optional[str]]] = None,
-    progress_cb: Optional[callable] = None,
-    quiet: bool = True,
+        histories,
+        titles,
+        show_orient_every=20,
+        *,
+        environment: Optional[Union[Environment, Sequence[Optional[Environment]]]] = None,
+        fit_to: str = 'trajectory',
+        error_messages: Optional[Sequence[Optional[str]]] = None,
+        progress_cb: Optional[callable] = None,
+        quiet: bool = True,
 ):
     """Salva PNG per ciascuna traiettoria con simboli del robot sovrapposti."""
     assert len(histories) == len(titles) and len(histories) > 0
@@ -918,10 +934,11 @@ def save_trajectories_images(
         fig, ax = plt.subplots(figsize=(7, 7))
         step = _resolve_show_every(i - 1)
         env_cur = _resolve_env(i - 1)
-        _plot_static_trajectory_on_axes(ax, hist, step=step, title=title_str, include_title=True, include_axis_labels=True, environment=env_cur, fit_to=fit_to)
+        _plot_static_trajectory_on_axes(ax, hist, step=step, title=title_str, include_title=True,
+                                        include_axis_labels=True, environment=env_cur, fit_to=fit_to)
         out_path = _default_save_path(title_str, subfolder='trajectories')
         fig.savefig(out_path, dpi=120, bbox_inches='tight')
-        if not quiet:
+        if not quiet and progress_cb is None:
             print(f"[save_trajectories_images] Salvato: {out_path}")
         if callable(progress_cb):
             try:
@@ -932,16 +949,16 @@ def save_trajectories_images(
 
 
 def save_lidar_scans_images(
-    history: np.ndarray,
-    title: str,
-    lidar: Lidar,
-    environment: Optional[Environment],
-    dt: float,
-    *,
-    interval_s: float = 1.0,
-    fit_to: str = 'environment',
-    progress_cb: Optional[callable] = None,
-    quiet: bool = True,
+        history: np.ndarray,
+        title: str,
+        lidar: Lidar,
+        environment: Optional[Environment],
+        dt: float,
+        *,
+        interval_s: float = 1.0,
+        fit_to: str = 'environment',
+        progress_cb: Optional[callable] = None,
+        quiet: bool = True,
 ) -> None:
     """Salva immagini dei punti di impatto LiDAR (hit) a intervalli regolari lungo history."""
     if history is None or len(history) == 0:
@@ -976,13 +993,15 @@ def save_lidar_scans_images(
                 x_min, x_max = float(np.min(bx)), float(np.max(bx))
                 y_min, y_max = float(np.min(by)), float(np.max(by))
             except Exception:
-                x_min = y_min = -1.0; x_max = y_max = 1.0
+                x_min = y_min = -1.0
+                x_max = y_max = 1.0
         else:
             if hits.size > 0:
                 x_min, x_max = float(np.min(hits[:, 0])), float(np.max(hits[:, 0]))
                 y_min, y_max = float(np.min(hits[:, 1])), float(np.max(hits[:, 1]))
             else:
-                x_min = y_min = -1.0; x_max = y_max = 1.0
+                x_min = y_min = -1.0
+                x_max = y_max = 1.0
         pad = 0.04 * max(x_max - x_min, y_max - y_min, 1.0)
         ax.set_xlim(x_min - pad, x_max + pad)
         ax.set_ylim(y_min - pad, y_max + pad)
@@ -995,9 +1014,9 @@ def save_lidar_scans_images(
                 ax.plot([x0, float(px)], [y0, float(py)], color='tab:red', alpha=0.35, linewidth=0.8)
             ax.scatter(hits[:, 0], hits[:, 1], s=6, c='tab:red', alpha=0.65)
 
-        out_path = out_dir / f"{_slugify(title)}_t{float(k)*float(dt):.2f}s_points_{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"
+        out_path = out_dir / f"{_slugify(title)}_t{float(k) * float(dt):.2f}s_points_{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"
         fig.savefig(out_path, dpi=120, bbox_inches='tight')
-        if not quiet:
+        if not quiet and progress_cb is None:
             print(f"[save_lidar_scans_images] Salvato: {out_path}")
         if callable(progress_cb):
             with suppress(Exception):
@@ -1006,16 +1025,16 @@ def save_lidar_scans_images(
 
 
 def save_lidar_polar_images(
-    history: np.ndarray,
-    title: str,
-    lidar: Lidar,
-    environment: Optional[Environment],
-    dt: float,
-    *,
-    interval_s: float = 1.0,
-    include_misses: bool = True,
-    progress_cb: Optional[callable] = None,
-    quiet: bool = True,
+        history: np.ndarray,
+        title: str,
+        lidar: Lidar,
+        environment: Optional[Environment],
+        dt: float,
+        *,
+        interval_s: float = 1.0,
+        include_misses: bool = True,
+        progress_cb: Optional[callable] = None,
+        quiet: bool = True,
 ) -> None:
     """Salva grafici r(θ) in gradi delle scansioni LiDAR a intervalli regolari."""
     if history is None or len(history) == 0:
@@ -1051,18 +1070,19 @@ def save_lidar_polar_images(
             ax.scatter(th_hit, rr_hit, s=10, c='tab:blue', alpha=0.95, label='hit')
         if include_misses and th_miss.size > 0:
             ax.scatter(th_miss, rr_miss, s=8, c='tab:gray', alpha=0.6, label='miss (r_max)')
-        ax.set_xlabel('θ [°]'); ax.set_ylabel('r [m]')
+        ax.set_xlabel('θ [°]')
+        ax.set_ylabel('r [m]')
         ax.grid(True, alpha=0.25)
-        ax.set_title(f"r(θ) – {title} – t={float(k)*float(dt):.2f} s")
+        ax.set_title(f"r(θ) – {title} – t={float(k) * float(dt):.2f} s")
         ax.set_ylim(-0.02 * float(lidar.r_max), 1.02 * float(lidar.r_max))
         ax.set_xlim(-1e-3, 360.0 + 1e-3)
         with suppress(Exception):
             ax.set_xticks([0, 60, 120, 180, 240, 300, 360])
         if (th_hit.size > 0) or (include_misses and th_miss.size > 0):
             ax.legend(loc='upper right', framealpha=0.85, fontsize=8)
-        out_path = out_dir / f"{_slugify(title)}_polar_t{float(k)*float(dt):.2f}s_{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"
+        out_path = out_dir / f"{_slugify(title)}_polar_t{float(k) * float(dt):.2f}s_{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"
         fig.savefig(out_path, dpi=120, bbox_inches='tight')
-        if not quiet:
+        if not quiet and progress_cb is None:
             print(f"[save_lidar_polar_images] Salvato: {out_path}")
         if callable(progress_cb):
             with suppress(Exception):
@@ -1117,6 +1137,7 @@ def _accumulate_icp_trajectory(history: np.ndarray, icp_results: List[Dict], key
         if r_rel.shape != (2, 2) or t_rel.shape != (2,):
             out[k, :] = out[k - 1]
             continue
+        # Composizione (versione precedente): usa direttamente R_rel e t_rel come incremento nel frame k-1
         t_world = r_w_prev @ t_rel
         x_k = x_prev + float(t_world[0])
         y_k = y_prev + float(t_world[1])
@@ -1125,31 +1146,33 @@ def _accumulate_icp_trajectory(history: np.ndarray, icp_results: List[Dict], key
             u, _s, vt = np.linalg.svd(r_w_k)
             r_w_k = u @ vt
         th_k = float(np.arctan2(r_w_k[1, 0], r_w_k[0, 0]))
-        out[k, 0] = x_k; out[k, 1] = y_k; out[k, 2] = th_k
+        out[k, 0] = x_k
+        out[k, 1] = y_k
+        out[k, 2] = th_k
         r_w_prev = r_w_k
     return out
 
 
 def _compute_icp_trajectories_for_case(history: np.ndarray, lidar: Lidar, env: Optional[Environment], *,
-                                        max_correspondence_distance: float = 0.40,
-                                        trim_fraction: float = 0.6,
-                                        damping_enabled: bool = True,
-                                        angle_thresh_deg: float = 10.0,
-                                        struct_ratio_thresh: float = 0.02,
-                                        damp_factor: float = 0.75,
-                                        sliding_filter_enabled: bool = True,
-                                        sliding_cos_threshold: float = 0.985,
-                                        angle_balance_enabled: bool = True,
-                                        angle_bin_deg: float = 8.0,
-                                        angle_max_per_bin: int = 18,
-                                        angle_prefer_far: bool = True,
-                                        use_scipy: bool = True,
-                                        progress_cb: Optional[callable] = None) -> Dict[str, np.ndarray]:
+                                       max_correspondence_distance: float = 0.40,
+                                       trim_fraction: float = 0.6,
+                                       damping_enabled: bool = True,
+                                       angle_thresh_deg: float = 10.0,
+                                       struct_ratio_thresh: float = 0.02,
+                                       damp_factor: float = 0.75,
+                                       sliding_filter_enabled: bool = True,
+                                       sliding_cos_threshold: float = 0.985,
+                                       angle_balance_enabled: bool = True,
+                                       angle_bin_deg: float = 8.0,
+                                       angle_max_per_bin: int = 18,
+                                       angle_prefer_far: bool = True,
+                                       use_scipy: bool = True,
+                                       progress_cb: Optional[callable] = None) -> Dict[str, np.ndarray]:
     if env is None or lidar is None:
         zero = np.asarray(history, dtype=float).copy()
         for k in range(1, len(zero)):
             zero[k, :] = zero[0, :]
-        return {'raw_none': zero.copy(), 'raw_odo': zero.copy(), 'none': zero.copy(), 'odo': zero.copy()}
+        return {'raw_none': zero.copy(), 'none': zero.copy()}
     icp_results = run_icp_over_history(
         np.asarray(history, dtype=float), lidar, env,
         step=1,
@@ -1172,25 +1195,23 @@ def _compute_icp_trajectories_for_case(history: np.ndarray, lidar: Lidar, env: O
     )
     return {
         'raw_none': _accumulate_icp_trajectory(history, icp_results, 'raw_none'),
-        'raw_odo': _accumulate_icp_trajectory(history, icp_results, 'raw_odo'),
         'none': _accumulate_icp_trajectory(history, icp_results, 'none'),
-        'odo': _accumulate_icp_trajectory(history, icp_results, 'odo'),
     }
 
 
 def show_trajectories_icp_grid(
-    histories,
-    titles,
-    *,
-    environment: Optional[Union[Environment, Sequence[Optional[Environment]]]] = None,
-    lidar: Optional[Union[Lidar, Sequence[Optional[Lidar]]]] = None,
-    dts=None,
-    commands_list=None,
-    fit_to: str = 'environment',
-    show_info: bool = True,
-    error_messages: Optional[Sequence[Optional[str]]] = None,
-    stop_indices: Optional[Sequence[Optional[int]]] = None,
-    stop_fractions: Optional[Sequence[Optional[float]]] = None,
+        histories,
+        titles,
+        *,
+        environment: Optional[Union[Environment, Sequence[Optional[Environment]]]] = None,
+        lidar: Optional[Union[Lidar, Sequence[Optional[Lidar]]]] = None,
+        dts=None,
+        commands_list=None,
+        fit_to: str = 'environment',
+        show_info: bool = True,
+        error_messages: Optional[Sequence[Optional[str]]] = None,
+        stop_indices: Optional[Sequence[Optional[int]]] = None,
+        stop_fractions: Optional[Sequence[Optional[float]]] = None,
 ):
     assert len(histories) == len(titles) and len(histories) > 0
 
@@ -1215,17 +1236,49 @@ def show_trajectories_icp_grid(
         lid_cur = _resolve_lidar(idx)
         fig, axes = plt.subplots(2, 3, figsize=(12, 8))
         plt.subplots_adjust(bottom=0.12, wspace=0.25, hspace=0.28)
-        ax_real = axes[0, 0]; ax_raw_none = axes[0, 1]; ax_raw_odo = axes[0, 2]
-        ax_filt_none = axes[1, 0]; ax_filt_odo = axes[1, 1]
-        axes[1, 2].axis('off')
-        _plot_static_trajectory_on_axes(ax_real, np.asarray(hist), step=max(1, int(len(hist))), title=f"Reale – {title}", include_title=True, include_axis_labels=True, environment=env_cur, fit_to='environment')
+        ax_real = axes[0, 0]; ax_raw_none = axes[0, 1]; ax_filt_none = axes[1, 0]
+        axes[0, 2].axis('off'); axes[1, 1].axis('off'); axes[1, 2].axis('off')
+        hist_np = np.asarray(hist, dtype=float)
+        # Reale: disegno traiettoria e ambiente
+        _plot_static_trajectory_on_axes(
+            ax_real, hist_np, step=max(1, int(len(hist_np))),
+            title=f"Reale – {title}", include_title=True, include_axis_labels=True,
+            environment=env_cur, fit_to='environment'
+        )
+        # Sfondo ambiente sugli altri pannelli
+        if env_cur is not None:
+            with suppress(Exception):
+                env_cur.plot(ax=ax_raw_none)
+            with suppress(Exception):
+                env_cur.plot(ax=ax_filt_none)
+        ax_raw_none.set_title('ICP RAW')
+        ax_filt_none.set_title('ICP Filtrato')
+        # Limiti coerenti su tutti i pannelli
+        r_robot, d_arrow = _robot_scale_from_history(hist_np)
+        x0, x1, y0, y1 = _compute_axes_limits_with_glyphs(hist_np, step=max(1, len(hist_np)), r_robot=r_robot,
+                                                          d_arrow=d_arrow, env=env_cur, fit_to=fit_to)
+        for a in (ax_real, ax_raw_none, ax_filt_none):
+            a.set_xlim(x0, x1)
+            a.set_ylim(y0, y1)
+            a.set_aspect('equal', 'box')
+            a.grid(False)
+            with suppress(*COMMON_EXC):
+                a.set_xlabel('x [m]')
+                a.set_ylabel('y [m]')
+        # Calcolo e disegno traiettorie ICP se possibile
         if env_cur is not None and lid_cur is not None:
-            trajs = _compute_icp_trajectories_for_case(np.asarray(hist), lid_cur, env_cur)
-            _plot_static_trajectory_on_axes(ax_raw_none, trajs['raw_none'], step=max(1, int(len(hist))), title="ICP RAW (init=None)", include_title=True, include_axis_labels=True, environment=env_cur, fit_to='environment')
-            _plot_static_trajectory_on_axes(ax_raw_odo, trajs['raw_odo'], step=max(1, int(len(hist))), title="ICP RAW (init=odo)", include_title=True, include_axis_labels=True, environment=env_cur, fit_to='environment')
-            _plot_static_trajectory_on_axes(ax_filt_none, trajs['none'], step=max(1, int(len(hist))), title="ICP Filtrato (init=None)", include_title=True, include_axis_labels=True, environment=env_cur, fit_to='environment')
-            _plot_static_trajectory_on_axes(ax_filt_odo, trajs['odo'], step=max(1, int(len(hist))), title="ICP Filtrato (init=odo)", include_title=True, include_axis_labels=True, environment=env_cur, fit_to='environment')
+            trajs = _compute_icp_trajectories_for_case(hist_np, lid_cur, env_cur)
+            raw_tr = trajs.get('raw_none'); filt_tr = trajs.get('none')
+            if isinstance(raw_tr, np.ndarray) and raw_tr.size > 0:
+                ax_raw_none.plot(raw_tr[:, 0], raw_tr[:, 1], '-', color='tab:blue', linewidth=1.5, label='RAW')
+            if isinstance(filt_tr, np.ndarray) and filt_tr.size > 0:
+                ax_filt_none.plot(filt_tr[:, 0], filt_tr[:, 1], '-', color='tab:green', linewidth=1.5, label='Filtrato')
+            with suppress(*COMMON_EXC):
+                ax_raw_none.legend(loc='best', framealpha=0.85, fontsize=8)
+                ax_filt_none.legend(loc='best', framealpha=0.85, fontsize=8)
         else:
-            ax_raw_none.set_title("ICP RAW (init=None)"); ax_raw_odo.set_title("ICP RAW (init=odo)")
-            ax_filt_none.set_title("ICP Filtrato (init=None)"); ax_filt_odo.set_title("ICP Filtrato (init=odo)")
-        plt.show()
+            with suppress(*COMMON_EXC):
+                ax_raw_none.text(0.5, 0.5, 'LiDAR/Ambiente non disponibili', ha='center', va='center', transform=ax_raw_none.transAxes)
+                ax_filt_none.text(0.5, 0.5, 'LiDAR/Ambiente non disponibili', ha='center', va='center', transform=ax_filt_none.transAxes)
+        fig.suptitle(f"Traiettorie – {title}", fontsize=12)
+    plt.show()

@@ -49,15 +49,11 @@ def save_concept_correspondences(res: Dict, title: str, out_path: str, max_lines
 def save_alignment_overlays(res: Dict, title: str, out_path: str):
     tgt = np.asarray(res['tgt_local'])
     src_none = np.asarray(res['none']['src_transformed'])
-    src_odo = np.asarray(res['odo']['src_transformed'])
     src_raw_none = np.asarray(res['raw_none']['src_transformed'])
-    src_raw_odo = np.asarray(res['raw_odo']['src_transformed'])
     plt.figure(figsize=(6, 5))
     plt.scatter(tgt[:, 0], tgt[:, 1], s=10, c='k', label='Target (k-1)')
-    plt.scatter(src_none[:, 0], src_none[:, 1], s=8, c='tab:red', alpha=0.7, label='ICP None')
-    plt.scatter(src_odo[:, 0], src_odo[:, 1], s=8, c='tab:green', alpha=0.7, label='ICP Odo')
-    plt.scatter(src_raw_none[:, 0], src_raw_none[:, 1], s=8, c='tab:orange', alpha=0.5, label='RAW None')
-    plt.scatter(src_raw_odo[:, 0], src_raw_odo[:, 1], s=8, c='tab:purple', alpha=0.5, label='RAW Odo')
+    plt.scatter(src_none[:, 0], src_none[:, 1], s=8, c='tab:red', alpha=0.7, label='ICP (filtrato)')
+    plt.scatter(src_raw_none[:, 0], src_raw_none[:, 1], s=8, c='tab:orange', alpha=0.5, label='RAW')
     plt.axis('equal'); plt.grid(alpha=0.3)
     plt.title(title)
     plt.legend(loc='upper right', fontsize=8)
@@ -68,37 +64,27 @@ def save_alignment_overlays(res: Dict, title: str, out_path: str):
 
 def save_convergence_curves(res: Dict, title: str, out_path: str):
     e_none = np.asarray(res['none']['errs'])
-    e_odo = np.asarray(res['odo']['errs'])
     e_rawn = np.asarray(res['raw_none']['errs'])
-    e_rawo = np.asarray(res['raw_odo']['errs'])
     plt.figure(figsize=(6, 4))
-    if e_none.size: plt.plot(e_none, label='ICP None')
-    if e_odo.size: plt.plot(e_odo, label='ICP Odo')
-    if e_rawn.size: plt.plot(e_rawn, '--', label='RAW None')
-    if e_rawo.size: plt.plot(e_rawo, '--', label='RAW Odo')
+    if e_none.size: plt.plot(e_none, label='ICP (filtrato)')
+    if e_rawn.size: plt.plot(e_rawn, '--', label='RAW')
     plt.xlabel('Iterazione'); plt.ylabel('RMSE')
     plt.title(title)
     plt.grid(alpha=0.3); plt.legend()
     _savefig(out_path)
 
 
-# 9) Frecce GT vs stima (Δx, Δy) e α
+# 9) Frecce stima (Δx, Δy) e α
 
 def save_motion_arrows(res: Dict, title: str, out_path: str):
-    # Frame locale di k-1
-    def ang_deg(r_mat):  # rinominato da R
+    def ang_deg(r_mat):
         return float(np.degrees(np.arctan2(r_mat[1, 0], r_mat[0, 0])))
-    gt_t = np.asarray(res['gt_t']); gt_r = np.asarray(res['gt_R'])
     ests = [
-        ('None', res['none']['t'], res['none']['R'], 'tab:red'),
-        ('Odo', res['odo']['t'], res['odo']['R'], 'tab:green'),
-        ('RAW None', res['raw_none']['t'], res['raw_none']['R'], 'tab:orange'),
-        ('RAW Odo', res['raw_odo']['t'], res['raw_odo']['R'], 'tab:purple'),
+        ('ICP (filtrato)', res['none']['t'], res['none']['R'], 'tab:red'),
+        ('RAW', res['raw_none']['t'], res['raw_none']['R'], 'tab:orange'),
     ]
     plt.figure(figsize=(5, 4))
-    # Ground truth
-    plt.quiver(0, 0, gt_t[0], gt_t[1], angles='xy', scale_units='xy', scale=1, color='k', width=0.005, label=f'GT (α={ang_deg(gt_r):+.2f}°)')
-    for name, t, r_est, col in ests:  # rinominato R -> r_est
+    for name, t, r_est, col in ests:
         t = np.asarray(t)
         plt.quiver(0, 0, t[0], t[1], angles='xy', scale_units='xy', scale=1, color=col, width=0.004, label=f'{name} (α={ang_deg(np.asarray(r_est)):+.2f}°)')
     plt.axis('equal'); plt.grid(alpha=0.3)
@@ -115,8 +101,8 @@ def save_raw_vs_filtered(res: Dict, title: str, out_path: str):
     filt = np.asarray(res['none']['src_transformed'])
     plt.figure(figsize=(5.5, 4.5))
     plt.scatter(tgt[:, 0], tgt[:, 1], s=10, c='k', label='Target (k-1)')
-    plt.scatter(raw[:, 0], raw[:, 1], s=8, c='tab:orange', alpha=0.6, label='RAW None')
-    plt.scatter(filt[:, 0], filt[:, 1], s=8, c='tab:red', alpha=0.8, label='ICP None (filtrato)')
+    plt.scatter(raw[:, 0], raw[:, 1], s=8, c='tab:orange', alpha=0.6, label='RAW')
+    plt.scatter(filt[:, 0], filt[:, 1], s=8, c='tab:red', alpha=0.8, label='ICP (filtrato)')
     plt.axis('equal'); plt.grid(alpha=0.3)
     plt.title(title)
     plt.legend(loc='upper right', fontsize=8)

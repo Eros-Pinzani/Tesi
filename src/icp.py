@@ -376,7 +376,7 @@ def run_icp_pair_local(
             'n_tgt': 0 if tgt_local is None else int(len(tgt_local)),
         }
 
-    # (A) ICP senza inizializzazione
+    # (A) ICP senza inizializzazione (filtrato)
     r_none, t_none, src_tf_none, hist_none, errs_none = icp_point_to_point(
         src_local, tgt_local,
         init_pose=None,
@@ -403,54 +403,10 @@ def run_icp_pair_local(
         dynamic_min=dynamic_min,
         dynamic_max=dynamic_max,
     )
-    # (B) ICP con inizializzazione odometrica
-    r0, t0 = relative_local_transform(prev_pose, curr_pose)
-    r_odo, t_odo, src_tf_odo, hist_odo, errs_odo = icp_point_to_point(
-        src_local, tgt_local,
-        init_pose=(r0, t0),
-        max_iterations=max_iterations,
-        tolerance=tolerance,
-        max_correspondence_distance=max_correspondence_distance,
-        trim_fraction=trim_fraction,
-        use_scipy=use_scipy,
-        verbose=False,
-        damping_enabled=damping_enabled,
-        angle_thresh_deg=angle_thresh_deg,
-        struct_ratio_thresh=struct_ratio_thresh,
-        damp_factor=damp_factor,
-        sliding_filter_enabled=sliding_filter_enabled,
-        sliding_cos_threshold=sliding_cos_threshold,
-        angle_balance_enabled=angle_balance_enabled,
-        angle_bin_deg=angle_bin_deg,
-        angle_max_per_bin=angle_max_per_bin,
-        angle_prefer_far=angle_prefer_far,
-        robust_enabled=robust_enabled,
-        huber_c_factor=huber_c_factor,
-        dynamic_maxdist=dynamic_maxdist,
-        dynamic_factor=dynamic_factor,
-        dynamic_min=dynamic_min,
-        dynamic_max=dynamic_max,
-    )
-    # (C) ICP RAW
+    # (B) ICP RAW minimale (nessun filtro, nessun damping)
     r_raw_none, t_raw_none, src_tf_raw_none, hist_raw_none, errs_raw_none = icp_point_to_point(
         src_local, tgt_local,
         init_pose=None,
-        max_iterations=max_iterations,
-        tolerance=tolerance,
-        max_correspondence_distance=None,
-        trim_fraction=None,
-        use_scipy=use_scipy,
-        verbose=False,
-        damping_enabled=False,
-        sliding_filter_enabled=False,
-        sliding_cos_threshold=sliding_cos_threshold,
-        angle_balance_enabled=False,
-        robust_enabled=False,
-        dynamic_maxdist=False,
-    )
-    r_raw_odo, t_raw_odo, src_tf_raw_odo, hist_raw_odo, errs_raw_odo = icp_point_to_point(
-        src_local, tgt_local,
-        init_pose=(r0, t0),
         max_iterations=max_iterations,
         tolerance=tolerance,
         max_correspondence_distance=None,
@@ -484,23 +440,20 @@ def run_icp_pair_local(
         rot_err = (rot_err + np.pi) % (2 * np.pi) - np.pi
         return trans_err, abs(float(np.degrees(rot_err)))
     none_trans_err, none_rot_err = _pose_errors(r_none, t_none)
-    odo_trans_err, odo_rot_err = _pose_errors(r_odo, t_odo)
     raw_none_trans_err, raw_none_rot_err = _pose_errors(r_raw_none, t_raw_none)
-    raw_odo_trans_err, raw_odo_rot_err = _pose_errors(r_raw_odo, t_raw_odo)
     best_key = min([
         ('none', none_trans_err, r_none, t_none),
-        ('odo', odo_trans_err, r_odo, t_odo),
         ('raw_none', raw_none_trans_err, r_raw_none, t_raw_none),
-        ('raw_odo', raw_odo_trans_err, r_raw_odo, t_raw_odo)
     ], key=lambda x: x[1])
     best_r = best_key[2]; best_t = best_key[3]
+    best_variant_name = best_key[0]
+    # Calcola errori della variante migliore prima di costruire l'output
     best_trans_err, best_rot_err = _pose_errors(best_r, best_t)
-
     out = {
         'ok': True,
         'n_src': int(len(src_local)),
         'n_tgt': int(len(tgt_local)),
-        'gt_R': r0, 'gt_t': t0,
+        'gt_R': None, 'gt_t': None,
         'src_local': src_local, 'tgt_local': tgt_local,
         'none': {
             'R': r_none, 't': t_none,
@@ -515,17 +468,6 @@ def run_icp_pair_local(
             'hist': hist_none,
             'src_transformed': src_tf_none,
         },
-        'odo': {
-            'R': r_odo, 't': t_odo,
-            'alpha_rad': _theta_from_r(r_odo),
-            'alpha_deg': _deg(_theta_from_r(r_odo)),
-            'rmse': float(errs_odo[-1]) if errs_odo.size > 0 else float('inf'),
-            'iterations': int(len(hist_odo)),
-            'n_corr_last': int(hist_odo[-1]['n_corr']) if len(hist_odo) > 0 else 0,
-            'errs': errs_odo,
-            'hist': hist_odo,
-            'src_transformed': src_tf_odo,
-        },
         'raw_none': {
             'R': r_raw_none, 't': t_raw_none,
             'alpha_rad': _theta_from_r(r_raw_none),
@@ -537,22 +479,19 @@ def run_icp_pair_local(
             'hist': hist_raw_none,
             'src_transformed': src_tf_raw_none,
         },
-        'raw_odo': {
-            'R': r_raw_odo, 't': t_raw_odo,
-            'alpha_rad': _theta_from_r(r_raw_odo),
-            'alpha_deg': _deg(_theta_from_r(r_raw_odo)),
-            'rmse': float(errs_raw_odo[-1]) if errs_raw_odo.size > 0 else float('inf'),
-            'iterations': int(len(hist_raw_odo)),
-            'n_corr_last': int(hist_raw_odo[-1]['n_corr']) if len(hist_raw_odo) > 0 else 0,
-            'errs': errs_raw_odo,
-            'hist': hist_raw_odo,
-            'src_transformed': src_tf_raw_odo,
-        },
-        'best': {
-            'R': best_r, 't': best_t,
-            'pose_err_trans': best_trans_err,
-            'pose_err_rot_deg': best_rot_err,
-        },
+    }
+    # Blocchi variante migliore con attributi uniformi
+    chosen_block = out['none'] if best_variant_name == 'none' else out['raw_none']
+    out['best'] = {
+        'R': chosen_block['R'],
+        't': chosen_block['t'],
+        'alpha_rad': chosen_block['alpha_rad'],
+        'alpha_deg': chosen_block['alpha_deg'],
+        'rmse': chosen_block['rmse'],
+        'iterations': chosen_block['iterations'],
+        'n_corr_last': chosen_block['n_corr_last'],
+        'pose_err_trans': best_trans_err,
+        'pose_err_rot_deg': best_rot_err,
     }
     return out
 
