@@ -17,7 +17,7 @@ from icp_plots import (
     save_motion_arrows,
     save_raw_vs_filtered,
 )
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 from environment import Environment
 import re
 import math
@@ -102,8 +102,15 @@ class _Tee:
         finally:
             try:
                 self._write_to_secondary_filtered(str(data))
+                # flush immediato del file per non perdere dati in caso di terminazione improvvisa
+                if hasattr(self._secondary, 'flush'):
+                    self._secondary.flush()
             except Exception:
                 self._secondary.write(str(data))
+                try:
+                    self._secondary.flush()
+                except Exception:
+                    pass
         return len(data)
 
     def flush(self):
@@ -269,6 +276,104 @@ def _interp_pose_local(p0: np.ndarray, p1: np.ndarray, alpha: float) -> np.ndarr
     return np.array([x, y, th], dtype=float)
 
 
+# ===== Parser ICP da log (usa ESATTAMENTE i valori stampati) =====
+_re_case_hdr = re.compile(r"^\s*CASO\s+(\d+):\s*(.+)$")
+_re_icp_pose = re.compile(r"^\s*ICP:\s*Δx=([+\-]?[0-9]+(?:\.[0-9]+)?)\s*m,\s*Δy=([+\-]?[0-9]+(?:\.[0-9]+)?)\s*m,\s*α=([+\-]?[0-9]+(?:\.[0-9]+)?)\s*deg\s*$")
+_ansi_re = re.compile(r"\x1b\[[0-9;]*m")
+
+# Nuovo: regex generica per tre etichette (Reali, ICP, RAW)
+_re_pose_labeled = re.compile(
+    r"^\s*(Reali:|ICP:|RAW:)\s*Δx=([+\-]?\d+(?:\.\d+)?)\s*m,\s*Δy=([+\-]?\d+(?:\.\d+)?)\s*m,\s*α=([+\-]?\d+(?:\.\d+)?)\s*deg\s*$"
+)
+
+def _accumulate_icp_deltas_to_traj(deltas: List[Tuple[float, float, float]]) -> np.ndarray:
+    """Dati Δ pose locali (dx [m], dy [m], alpha_deg [deg]) nel frame k-1,
+    integra in una traiettoria globale partendo da (0,0,0) senza trasformazioni extra."""
+    n = len(deltas)
+    hist = np.zeros((n + 1, 3), dtype=float)
+    x = 0.0; y = 0.0; th = 0.0
+    hist[0] = [x, y, th]
+    for i, (dx, dy, a_deg) in enumerate(deltas, start=1):
+        a = math.radians(float(a_deg))
+        # Trasforma l'incremento locale (dx,dy) nel mondo ruotandolo dell'orientamento corrente
+        c, s = math.cos(th), math.sin(th)
+        gx = c * dx - s * dy
+        gy = s * dx + c * dy
+        x += gx
+        y += gy
+        th = (th + a + math.pi) % (2.0 * math.pi) - math.pi
+        hist[i] = [x, y, th]
+    return hist
+
+
+def _parse_icp_trajectories_from_log(log_path: str, n_cases: int) -> List[Optional[np.ndarray]]:
+    """[DEPRECATO] Mantiene la vecchia API: ritorna solo ICP filtrato.
+    Usata per compatibilità, delega al parser completo e prende la serie 'icp'."""
+    triplets = parse_icp_triplets_from_log(log_path, n_cases)
+    out: List[Optional[np.ndarray]] = []
+    for case in triplets:
+        out.append(case.get('icp'))
+    return out
+
+
+def parse_icp_triplets_from_log(log_path: str, n_cases: int) -> List[Dict[str, Optional[np.ndarray]]]:
+    """Parsa il file di log corrente e ricostruisce per ciascun CASO le traiettorie
+    usando ESATTAMENTE i Δ stampati per: Reali, ICP filtrato ("ICP:"), RAW ("RAW:").
+    Ritorna una lista per-caso di dizionari: {'real': np.ndarray|None, 'icp': np.ndarray|None, 'raw': np.ndarray|None}.
+    Ogni traiettoria parte da (0,0,0)."""
+    try:
+        with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
+            lines = f.readlines()
+    except OSError:
+        return [{"real": None, "icp": None, "raw": None} for _ in range(int(n_cases))]
+
+    # Accumula Δ per caso e per etichetta
+    per_case: List[Dict[str, List[Tuple[float, float, float]]]] = [
+        {"real": [], "icp": [], "raw": []} for _ in range(int(n_cases))
+    ]
+    cur_case_idx: Optional[int] = None
+
+    for raw_line in lines:
+        clean = _ansi_re.sub('', raw_line)
+        line = clean.rstrip('\n')
+        m_hdr = _re_case_hdr.match(line)
+        if m_hdr:
+            try:
+                idx = int(m_hdr.group(1))
+                cur_case_idx = idx - 1 if 1 <= idx <= n_cases else None
+            except Exception:
+                cur_case_idx = None
+            continue
+        if cur_case_idx is None:
+            continue
+        m_pose = _re_pose_labeled.match(line)
+        if not m_pose:
+            continue
+        label = m_pose.group(1)
+        try:
+            dx = float(m_pose.group(2))
+            dy = float(m_pose.group(3))
+            a_deg = float(m_pose.group(4))
+        except Exception:
+            continue
+        if label.startswith('Reali'):
+            per_case[cur_case_idx]['real'].append((dx, dy, a_deg))
+        elif label.startswith('ICP'):
+            per_case[cur_case_idx]['icp'].append((dx, dy, a_deg))
+        elif label.startswith('RAW'):
+            per_case[cur_case_idx]['raw'].append((dx, dy, a_deg))
+
+    # Costruisci traiettorie
+    out: List[Dict[str, Optional[np.ndarray]]] = []
+    for cs in per_case:
+        item: Dict[str, Optional[np.ndarray]] = {}
+        for k in ('real', 'icp', 'raw'):
+            deltas = cs.get(k, [])
+            item[k] = _accumulate_icp_deltas_to_traj(deltas) if deltas else None
+        out.append(item)
+    return out
+# ===== Fine parser ICP da log =====
+
 def main():
     parser = argparse.ArgumentParser(description="Simulatore traiettorie + salvatore immagini")
     parser.add_argument("--skip-collision", action="store_true", help="Salta il calcolo collisioni per avvio piu' rapido")
@@ -281,6 +386,7 @@ def main():
     parser.add_argument("--viewer-mode", choices=["grid","carousel"], default="carousel", help="Seleziona viewer: 'grid' (ICP a 5 pannelli) o 'carousel' (standard) - default: carousel")
     parser.add_argument("--quiet", action="store_true", help="Se presente sopprime stampe durante salvataggio immagini (default: stampe attive)")
     parser.add_argument("--no-icp-verbose", dest="icp_verbose", action="store_false", help="Disabilita stampe dettagliate ICP durante l'esecuzione principale")
+    # parser.add_argument("--viewer-from-log-icp", action="store_true", help="Usa le traiettorie ICP ricostruite ESATTAMENTE dal log corrente nel viewer")
     parser.set_defaults(icp_verbose=True)
     args = parser.parse_args()
 
@@ -294,7 +400,7 @@ def main():
         _log_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
     _ts = _dt.datetime.now().strftime('%Y%m%d-%H%M%S')
     _log_path = os.path.join(_log_dir, f"run_output_{_ts}.txt")
-    _log_file = open(_log_path, 'w', encoding='utf-8', newline='')
+    _log_file = open(_log_path, 'w', encoding='utf-8', newline='', buffering=1)
     sys.stdout = _Tee(_orig_stdout, _log_file)
     sys.stderr = _Tee(_orig_stderr, _log_file)
     print(f"[log] Duplico l'output della console su: {_log_path}")
@@ -671,29 +777,69 @@ def main():
                                 rn_ax = float(rrn['t'][0]); rn_ay = float(rrn['t'][1]); rn_ad = float(rrn['alpha_deg'])
                                 print(f"      {'RAW:':<16}Δx={rn_ax:+.3f} m, Δy={rn_ay:+.3f} m, α={rn_ad:+.4f} deg")
 
+        # ===== Ricostruzione traiettorie da LOG corrente (se richiesto) =====
+        icp_histories_from_log: Optional[List[np.ndarray]] = None
+        icp_raw_from_log: Optional[List[np.ndarray]] = None
+        icp_filt_from_log: Optional[List[np.ndarray]] = None
+        if not args.skip_icp:
+            # Assicura che le stampe ICP siano state flushate su file prima di leggere
+            try:
+                sys.stdout.flush(); sys.stderr.flush()
+            except Exception:
+                pass
+            triplets = parse_icp_triplets_from_log(_log_path, n_cases=len(titles))
+            icp_histories_from_log = []
+            icp_raw_from_log = []
+            icp_filt_from_log = []
+            for idx, item in enumerate(triplets):
+                real = item.get('real')
+                icp = item.get('icp')
+                raw = item.get('raw')
+                # ognuno può mancare: inserisci fallback minimale
+                icp_histories_from_log.append(real if isinstance(real, np.ndarray) and real.size > 0 else np.zeros((1,3), dtype=float))
+                icp_raw_from_log.append(raw if isinstance(raw, np.ndarray) and raw.size > 0 else np.zeros((1,3), dtype=float))
+                icp_filt_from_log.append(icp if isinstance(icp, np.ndarray) and icp.size > 0 else np.zeros((1,3), dtype=float))
+        # ===== Fine ricostruzione =====
+
         # Mostra viewer dopo tutti i salvataggi e (opzionale) ICP
         if not args.skip_viewer:
+            # Scegli set di traiettorie per il viewer
+            # Se abbiamo ricostruito dal log: usa real(icp_histories_from_log) come pannello "Reale – ... (ICP da log)"
+            # e passa raw/filtrato al viewer per i due pannelli ICP
+            if icp_histories_from_log is not None:
+                viewer_histories = icp_histories_from_log
+                viewer_titles = [f"{t} (ICP da log)" for t in titles]
+                viewer_cmds = None
+                viewer_raw = icp_raw_from_log
+                viewer_filt = icp_filt_from_log
+            else:
+                viewer_histories = histories
+                viewer_titles = titles
+                viewer_cmds = commands_list
+                viewer_raw = None
+                viewer_filt = None
+
             if args.viewer_mode == "grid":
                 visualizer.show_trajectories_icp_grid(
-                    histories,
-                    titles,
+                    viewer_histories,
+                    viewer_titles,
                     environment=envs,
                     lidar=lidars,
                     dts=dt,
-                    commands_list=commands_list,
+                    commands_list=viewer_cmds,
                     fit_to='environment',
                     show_info=True,
-                    error_messages=[None]*len(histories),
+                    error_messages=[None]*len(viewer_histories),
                     stop_indices=stop_indices,
                     stop_fractions=stop_fractions,
                 )
             else:
                 visualizer.show_trajectories_carousel(
-                    histories,
-                    titles,
+                    viewer_histories,
+                    viewer_titles,
                     show_orient_every=show_steps,
                     save_each=False,
-                    commands_list=commands_list,
+                    commands_list=viewer_cmds,
                     dts=dt,
                     show_info=True,
                     environment=envs,
@@ -703,6 +849,8 @@ def main():
                     lidar=lidars,
                     show_lidar=True,
                     lidar_every=int(max(1, args.viewer_lidar_every)),
+                    icp_raw_histories=viewer_raw,
+                    icp_filt_histories=viewer_filt,
                  )
 
         # (Opzionale) Esegui ICP in frame locale per confrontare init=None vs init odometrica

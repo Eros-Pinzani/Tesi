@@ -508,6 +508,9 @@ def show_trajectories_carousel(
         lidar: Optional[Union[Lidar, Sequence[Optional[Lidar]]]] = None,
         show_lidar: bool = True,
         lidar_every: int = 1,
+        # Nuovo: traiettorie ICP già ricostruite dal LOG (stessa lunghezza di histories)
+        icp_raw_histories: Optional[Sequence[Optional[np.ndarray]]] = None,
+        icp_filt_histories: Optional[Sequence[Optional[np.ndarray]]] = None,
 ):
     """Viewer interattivo per più traiettorie con pulsanti e Play/Pausa.
 
@@ -516,6 +519,8 @@ def show_trajectories_carousel(
     - stop_fractions: frazione temporale tra stop_indices-1 e stop_indices dove avviene l'impatto (0..1].
     - lidar: singolo sensore o lista per-traiettoria; se presente, disegna i raggi del frame corrente.
     - lidar_every: aggiorna la visualizzazione LiDAR ogni N frame (default 1 = ogni frame).
+    - icp_raw_histories/icp_filt_histories: se forniti, i pannelli RAW/Filtrato useranno ESATTAMENTE queste
+      traiettorie (derivate dal log), senza ricalcolare l'ICP o leggere JSON.
     """
     assert len(histories) == len(titles) and len(histories) > 0, "Liste vuote o di diversa lunghezza"
     if isinstance(show_orient_every, (list, tuple, np.ndarray)):
@@ -531,6 +536,10 @@ def show_trajectories_carousel(
         assert len(stop_fractions) == len(histories), "stop_fractions deve avere stessa lunghezza di histories"
     if isinstance(lidar, (list, tuple)):
         assert len(lidar) == len(histories), "lidar (lista) deve avere stessa lunghezza di histories"
+    if icp_raw_histories is not None:
+        assert len(icp_raw_histories) == len(histories), "icp_raw_histories deve avere stessa lunghezza di histories"
+    if icp_filt_histories is not None:
+        assert len(icp_filt_histories) == len(histories), "icp_filt_histories deve avere stessa lunghezza di histories"
 
     # Consuma parametri non ancora usati (API futura) per evitare warning di variabili inutilizzate
     _ = save_each
@@ -640,6 +649,8 @@ def show_trajectories_carousel(
         hist = histories[state["idx"]]
         r_robot, d_arrow = _robot_scale_from_history(hist)
         is_first = (k == 0)
+        # Clippa k al range
+        k = int(max(0, min(k, len(hist) - 1)))
         is_last = (k == len(hist) - 1) if len(hist) > 0 else False
         body_col = 'green' if is_first else ('red' if is_last else 'tab:blue')
         center_col = 'green' if is_first else ('red' if is_last else 'orange')
@@ -650,8 +661,10 @@ def show_trajectories_carousel(
         nonlocal line_raw_none, line_filt_none
 
         def _upd(ax, line, traj, color, label=None, style='-'):
-            xs = traj[:k + 1, 0]
-            ys = traj[:k + 1, 1]
+            # Clippa k per non superare la lunghezza di traj
+            k_use = int(max(0, min(k, len(traj) - 1)))
+            xs = traj[:k_use + 1, 0]
+            ys = traj[:k_use + 1, 1]
             if line is None:
                 ln, = ax.plot(xs, ys, style, color=color, linewidth=1.5, label=label)
                 return ln
@@ -670,11 +683,13 @@ def show_trajectories_carousel(
             _clear_artists(icp_robot_artists[key])
             hist_k = trajs[key]
             r_robot, d_arrow = _robot_scale_from_history(hist_k)
-            is_first = (k == 0)
-            is_last = (k == len(hist_k) - 1)
+            # Clippa k
+            kk = int(max(0, min(k, len(hist_k) - 1)))
+            is_first = (kk == 0)
+            is_last = (kk == len(hist_k) - 1)
             body_col = 'green' if is_first else ('red' if is_last else line_col)
             center_col = 'green' if is_first else ('red' if is_last else 'orange')
-            icp_robot_artists[key] = draw_robot(axp, hist_k[k], robot_radius=r_robot, dir_len=d_arrow, color=body_col,
+            icp_robot_artists[key] = draw_robot(axp, hist_k[kk], robot_radius=r_robot, dir_len=d_arrow, color=body_col,
                                                 arrow_color='orange', center_color=center_col)
 
     def draw_current():
@@ -703,64 +718,74 @@ def show_trajectories_carousel(
         if idxc not in cache:
             info_artist = fig.text(0.5, 0.02, f"Calcolo ICP per: {title}...", ha='center', va='bottom', fontsize=10)
             fig.canvas.draw_idle()
-            # Se esiste JSON precomputato, usalo; altrimenti calcola ora
-            import os, json
-            json_path = os.path.join(os.path.dirname(__file__), '..', 'img', 'icp', 'icp_results.json')
+            # Primo tentativo: usa traiettorie fornite dal log, se disponibili
             icp_res_trajs = None
-            if os.path.exists(json_path):
-                try:
-                    with open(json_path, 'r', encoding='utf-8') as fj:
-                        data = json.load(fj)
-                    # Trova caso per titolo
-                    slug_case = title.lower().replace(' ', '_').replace('à', 'a').replace('è', 'e').replace('é', 'e')
-                    case = next(
-                        (c for c in data.get('cases', []) if c.get('slug') == slug_case or c.get('title') == title),
-                        None)
-                    if case and case.get('pairs'):
-                        # Accumula traiettoria usando le stesse trasformazioni del JSON
-                        def _acc_from_pairs(hist: np.ndarray, pairs: list, key: str) -> np.ndarray:
-                            n = len(hist)
-                            out = np.zeros((n, 3), dtype=float)
-                            out[0, :] = hist[0]
-                            th0 = float(out[0, 2])
-                            r_w_prev = np.array([[np.cos(th0), -np.sin(th0)], [np.sin(th0), np.cos(th0)]], dtype=float)
-                            by_k = {int(p['k']): p for p in pairs}
-                            for k in range(1, n):
-                                x_prev, y_prev, _ = map(float, out[k - 1])
-                                p = by_k.get(k)
-                                if not p:
-                                    out[k, :] = out[k - 1]
-                                    continue
-                                bk = p.get(key)
-                                if not bk:
-                                    out[k, :] = out[k - 1]
-                                    continue
-                                r_rel = np.asarray(bk['R'], dtype=float)
-                                t_rel = np.asarray(bk['t'], dtype=float).reshape(2)
-                                if r_rel.shape != (2, 2) or t_rel.shape != (2,):
-                                    out[k, :] = out[k - 1]
-                                    continue
-                                # Composizione precedente: world_k = world_{k-1} + R_w_prev * t_rel ; R_w_k = R_w_prev * R_rel
-                                t_world = r_w_prev @ t_rel
-                                x_k = x_prev + float(t_world[0])
-                                y_k = y_prev + float(t_world[1])
-                                r_w_k = r_w_prev @ r_rel
-                                try:
-                                    u, _s, vt = np.linalg.svd(r_w_k)
-                                    r_w_k = u @ vt
-                                except Exception:
-                                    pass
-                                th_k = float(np.arctan2(r_w_k[1, 0], r_w_k[0, 0]))
-                                out[k, :] = [x_k, y_k, th_k]
-                                r_w_prev = r_w_k
-                            return out
-                        pairs = case['pairs']
-                        icp_res_trajs = {
-                            'raw_none': _acc_from_pairs(hist, pairs, 'raw_none'),
-                            'none': _acc_from_pairs(hist, pairs, 'none'),
-                        }
-                except Exception:
-                    icp_res_trajs = None
+            if icp_raw_histories is not None or icp_filt_histories is not None:
+                raw_arr = None if icp_raw_histories is None else icp_raw_histories[idxc]
+                filt_arr = None if icp_filt_histories is None else icp_filt_histories[idxc]
+                if isinstance(raw_arr, np.ndarray) and raw_arr.size > 0 and isinstance(filt_arr, np.ndarray) and filt_arr.size > 0:
+                    icp_res_trajs = {
+                        'raw_none': np.asarray(raw_arr, dtype=float),
+                        'none': np.asarray(filt_arr, dtype=float),
+                    }
+            # Se esiste JSON precomputato, usalo; altrimenti calcola ora
+            if icp_res_trajs is None:
+                import os, json
+                json_path = os.path.join(os.path.dirname(__file__), '..', 'img', 'icp', 'icp_results.json')
+                if os.path.exists(json_path):
+                    try:
+                        with open(json_path, 'r', encoding='utf-8') as fj:
+                            data = json.load(fj)
+                        # Trova caso per titolo
+                        slug_case = title.lower().replace(' ', '_').replace('à', 'a').replace('è', 'e').replace('é', 'e')
+                        case = next(
+                            (c for c in data.get('cases', []) if c.get('slug') == slug_case or c.get('title') == title),
+                            None)
+                        if case and case.get('pairs'):
+                            # Accumula traiettoria usando le stesse trasformazioni del JSON
+                            def _acc_from_pairs(hist: np.ndarray, pairs: list, key: str) -> np.ndarray:
+                                n = len(hist)
+                                out = np.zeros((n, 3), dtype=float)
+                                out[0, :] = hist[0]
+                                th0 = float(out[0, 2])
+                                r_w_prev = np.array([[np.cos(th0), -np.sin(th0)], [np.sin(th0), np.cos(th0)]], dtype=float)
+                                by_k = {int(p['k']): p for p in pairs}
+                                for k in range(1, n):
+                                    x_prev, y_prev, _ = map(float, out[k - 1])
+                                    p = by_k.get(k)
+                                    if not p:
+                                        out[k, :] = out[k - 1]
+                                        continue
+                                    bk = p.get(key)
+                                    if not bk:
+                                        out[k, :] = out[k - 1]
+                                        continue
+                                    r_rel = np.asarray(bk['R'], dtype=float)
+                                    t_rel = np.asarray(bk['t'], dtype=float).reshape(2)
+                                    if r_rel.shape != (2, 2) or t_rel.shape != (2,):
+                                        out[k, :] = out[k - 1]
+                                        continue
+                                    # Composizione precedente: world_k = world_{k-1} + R_w_prev * t_rel ; R_w_k = R_w_prev * R_rel
+                                    t_world = r_w_prev @ t_rel
+                                    x_k = x_prev + float(t_world[0])
+                                    y_k = y_prev + float(t_world[1])
+                                    r_w_k = r_w_prev @ r_rel
+                                    try:
+                                        u, _s, vt = np.linalg.svd(r_w_k)
+                                        r_w_k = u @ vt
+                                    except Exception:
+                                        pass
+                                    th_k = float(np.arctan2(r_w_k[1, 0], r_w_k[0, 0]))
+                                    out[k, :] = [x_k, y_k, th_k]
+                                    r_w_prev = r_w_k
+                                return out
+                            pairs = case['pairs']
+                            icp_res_trajs = {
+                                'raw_none': _acc_from_pairs(hist, pairs, 'raw_none'),
+                                'none': _acc_from_pairs(hist, pairs, 'none'),
+                            }
+                    except Exception:
+                        icp_res_trajs = None
             if icp_res_trajs is None:
                 icp_res_trajs = _compute_icp_trajectories_for_case(hist, lid_cur, env_cur)
             cache[idxc] = icp_res_trajs
