@@ -10,10 +10,18 @@ def _ensure_dir(path: str):
 
 
 def _savefig(path: str, dpi: int = 140):
-    _ensure_dir(os.path.dirname(path))
-    plt.tight_layout()
-    plt.savefig(path, dpi=dpi)
-    plt.close()
+    # Disabilita temporaneamente la modalità interattiva per non mostrare finestre
+    was_interactive = plt.isinteractive()
+    plt.ioff()
+    try:
+        _ensure_dir(os.path.dirname(path))
+        plt.tight_layout()
+        plt.savefig(path, dpi=dpi)
+        plt.close()
+    finally:
+        # Ripristina lo stato interattivo originale
+        if was_interactive:
+            plt.ion()
 
 
 # 1) Schema concettuale corrispondenze (subset)
@@ -63,8 +71,9 @@ def save_alignment_overlays(res: Dict, title: str, out_path: str):
 # 3) Curve di convergenza (RMSE per iterazione)
 
 def save_convergence_curves(res: Dict, title: str, out_path: str):
-    e_none = np.asarray(res['none']['errs'])
-    e_rawn = np.asarray(res['raw_none']['errs'])
+    # Compatibilità: il nuovo ICP usa 'errors', il vecchio usava 'errs'
+    e_none = np.asarray(res['none'].get('errors', res['none'].get('errs', [])))
+    e_rawn = np.asarray(res['raw_none'].get('errors', res['raw_none'].get('errs', [])))
     plt.figure(figsize=(6, 4))
     if e_none.size: plt.plot(e_none, label='ICP (filtrato)')
     if e_rawn.size: plt.plot(e_rawn, '--', label='RAW')

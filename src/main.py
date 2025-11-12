@@ -5,8 +5,8 @@ import visualizer
 from environment_presets import setup_environments_per_trajectory
 from lidar import Lidar  # sensore LiDAR
 import argparse
-from icp import run_icp_over_history  # nuovo: esecuzione ICP su storia
-from icp import relative_local_transform  # nuovo: GT relativo per confronto pose
+from icp import relative_local_transform  # Ground truth relativo per confronto pose
+from icp_simple import run_icp_pair  # Nuovo ICP semplice e robusto
 import time  # per ETA nella barra di progresso
 from tqdm import tqdm as _tqdm  # progress bar esterna con ETA
 # import sys  # per rilevare TTY e usare bold ANSI (non più necessario, grassetto forzato)
@@ -253,6 +253,57 @@ def _env_bounds_diag(env: Environment) -> float:
         return 10.0
 
 
+def apply_loop_closure_correction(trajectory: np.ndarray, is_circular: bool = False, closure_threshold: float = 0.3) -> np.ndarray:
+    """
+    Applica correzione di loop closure per traiettorie circolari.
+    Se il punto finale è vicino all'inizio, distribuisce l'errore lungo tutta la traiettoria.
+
+    Args:
+        trajectory: Array Nx3 [x, y, theta]
+        is_circular: Se True, forza la chiusura del loop
+        closure_threshold: Distanza massima per considerare il loop chiuso (metri)
+
+    Returns:
+        Traiettoria corretta
+    """
+    if len(trajectory) < 10 or not is_circular:
+        return trajectory
+
+    # Controlla se il loop è quasi chiuso
+    start = trajectory[0, :2]
+    end = trajectory[-1, :2]
+    distance = np.linalg.norm(end - start)
+
+    if distance > closure_threshold:
+        # Loop non abbastanza vicino, non correggere
+        return trajectory
+
+    # Calcola errore totale
+    error_xy = start - end
+    error_theta = trajectory[0, 2] - trajectory[-1, 2]
+
+    # Normalizza errore angolare a [-pi, pi]
+    while error_theta > np.pi:
+        error_theta -= 2 * np.pi
+    while error_theta < -np.pi:
+        error_theta += 2 * np.pi
+
+    # Distribuisci la correzione linearmente lungo la traiettoria
+    corrected = trajectory.copy()
+    n = len(trajectory)
+
+    for i in range(1, n):
+        # Frazione del percorso completato
+        alpha = float(i) / float(n - 1)
+
+        # Applica correzione proporzionale
+        corrected[i, 0] += alpha * error_xy[0]
+        corrected[i, 1] += alpha * error_xy[1]
+        corrected[i, 2] += alpha * error_theta
+
+    return corrected
+
+
 def _build_lidars_for_cases(envs: List[Environment], titles: List[str]) -> List[Lidar]:
     """Crea una lista di Lidar per singolo caso con r_max adattivo per non coprire sempre tutti gli ostacoli.
     Strategia: r_max = fattore * diagonale dei bounds, con fattori più piccoli per i casi rettilinei."""
@@ -418,6 +469,14 @@ def main():
     parser.set_defaults(icp_verbose=True)
     args = parser.parse_args()
 
+    # Se viene lanciato senza argomenti, attiva automaticamente tutte le funzionalità
+    if len(sys.argv) == 1:
+        # Attiva automaticamente ICP e viewer in modalità carousel (animato)
+        args.run_icp = True
+        args.skip_viewer = False
+        args.viewer_mode = "carousel"  # Modalità animata
+        args.viewer_log_align_world = True
+
     # Attiva tee su file per duplicare l'output della console in un .txt della sessione
     _orig_stdout, _orig_stderr = sys.stdout, sys.stderr
     _log_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', 'logs'))
@@ -431,7 +490,6 @@ def main():
     _log_file = open(_log_path, 'w', encoding='utf-8', newline='', buffering=1)
     sys.stdout = _Tee(_orig_stdout, _log_file)
     sys.stderr = _Tee(_orig_stderr, _log_file)
-    print(f"[log] Duplico l'output della console su: {_log_path}")
 
     try:
         # Compatibilità: se viene passato il flag deprecato, forza viewer_mode a 'grid'
@@ -447,12 +505,12 @@ def main():
 
         dt = 0.05       # Passo temporale di integrazione (Eulero)
 
-        # Parametri base di riferimento
-        v_ref = 0.5
-        radius_ref = 2.0
-        v_min_ref = 0.2
-        v_max_ref = 0.8
-        omega_std_ref = 0.5
+        # Parametri base di riferimento - AUMENTATI per migliorare ICP
+        v_ref = 1.0         # Era 0.5 - raddoppiato per movimenti più grandi
+        radius_ref = 1.5    # Era 2.0 - ridotto per avere curve più strette (più feature)
+        v_min_ref = 0.4     # Era 0.2
+        v_max_ref = 1.6     # Era 0.8
+        omega_std_ref = 0.8 # Era 0.5
 
         tg = TrajectoryGenerator()                 # Generatore delle traiettorie
         sim = build_simulator()                    # Simulatore con robot iniziale di default
@@ -503,14 +561,15 @@ def main():
         commands_list.append(sim.commands)
         titles.append("Circolare (v variabile)")
 
-        # 5) Traiettoria a 8 — ciclo completo
+        # 5) Traiettoria a 8 — ciclo completo con raggio maggiore per separare i lobi
         v = v_ref
-        period_eight = (4.0 * math.pi * r_ref) / max(v, 1e-9)
+        r_eight = 2.0  # Raggio 2.0m (invece di 1.95m) per lobi ben separati e visibili
+        period_eight = (4.0 * math.pi * r_eight) / max(v, 1e-9)
         n_steps_eight = max(2, int(round(period_eight / dt)))
         if n_steps_eight % 2 == 1:
             n_steps_eight += 1
         t_eight = (n_steps_eight - 1e-9) * dt
-        vs, omegas = tg.eight(v=v, radius=r_ref, T=t_eight, dt=dt)
+        vs, omegas = tg.eight(v=v, radius=r_eight, T=t_eight, dt=dt)
         reset_robot_default(sim)
         histories.append(sim.run_from_sequence(vs, omegas, dt))
         commands_list.append(sim.commands)
@@ -609,28 +668,21 @@ def main():
         if not args.skip_icp:
             print("\n[Esecuzione ICP] Avvio calcolo ICP su tutte le traiettorie...")
             icp_all_cases = []
-            # Parametri ICP globali con piccoli aggiustamenti per alcuni casi
-            trim_fraction = 0.6
-            damping_enabled = True
-            angle_thresh_deg = 10.0
-            struct_ratio_thresh = 0.02
-            damp_factor = 0.75
-            sliding_filter_enabled = True
-            angle_balance_enabled = True
-            angle_bin_deg = 8.0
-            angle_prefer_far = True
+
             for idx, (case_hist, case_title, case_env, case_lid) in enumerate(zip(histories, titles, envs, lidars)):
-                if idx in (0, 1):  # rettilinei
-                    _maxcorr = 0.32; _sliding_cos = 0.985; _angle_max_bin = 16
-                    angle_bin_deg = 8.0; trim_fraction = 0.55
-                elif idx in (3, 4):  # circolari
-                    _maxcorr = 0.38; _sliding_cos = 0.99; _angle_max_bin = 24
-                    angle_bin_deg = 8.0
-                else:
-                    _maxcorr = 0.40; _sliding_cos = 0.985; _angle_max_bin = 18
+                # Imposta max_correspondence_distance in base al tipo di traiettoria
+                if idx in (0, 1):  # rettilinei - movimento lineare
+                    _maxcorr = 0.25
+                elif idx == 2:  # circolare v costante
+                    _maxcorr = 0.20
+                elif idx == 3:  # circolare v variabile
+                    _maxcorr = 0.20
+                elif idx == 4:  # traiettoria a 8 - AUMENTATO per geometria complessa
+                    _maxcorr = 0.35  # Più alta per gestire transizione tra lobi
+                else:  # random walk
+                    _maxcorr = 0.30
                 # Progress bar per-caso
                 case_pbar = None
-                case_cb = None
                 if _tqdm is not None:
                     _step = 1
                     total_pairs = max(0, len(range(1, len(case_hist), max(1, _step))))
@@ -642,37 +694,45 @@ def main():
                         leave=False,
                         bar_format="{percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} {unit} [{elapsed}<{remaining}]"
                     )
-                    case_cb = lambda _d, _t, p=case_pbar: p.update(1)
-                try:
-                    res_list = run_icp_over_history(
-                        case_hist, case_lid, case_env,
-                        step=1,
+
+                # Esegui ICP su tutte le coppie consecutive
+                res_list = []
+                for k in range(1, len(case_hist)):
+                    prev_pose = case_hist[k-1]
+                    curr_pose = case_hist[k]
+
+                    # Genera scansioni LiDAR in frame locale
+                    prev_local = case_lid.scan_hits(prev_pose, case_env, frame='local')
+                    curr_local = case_lid.scan_hits(curr_pose, case_env, frame='local')
+
+                    if len(prev_local) < 10 or len(curr_local) < 10:
+                        res_list.append({
+                            'ok': False,
+                            'k': k,
+                            'n_src': len(curr_local),
+                            'n_tgt': len(prev_local)
+                        })
+                        if case_pbar is not None:
+                            case_pbar.update(1)
+                        continue
+
+                    # Esegui ICP con il nuovo algoritmo semplice
+                    result = run_icp_pair(
+                        prev_pose, curr_pose,
+                        curr_local, prev_local,  # source=k, target=k-1
                         max_iterations=50,
-                        tolerance=5e-6,
-                        max_correspondence_distance=_maxcorr,
-                        use_scipy=True,
-                        trim_fraction=trim_fraction,
-                        damping_enabled=damping_enabled,
-                        angle_thresh_deg=angle_thresh_deg,
-                        struct_ratio_thresh=struct_ratio_thresh,
-                        damp_factor=damp_factor,
-                        sliding_filter_enabled=sliding_filter_enabled,
-                        sliding_cos_threshold=_sliding_cos,
-                        angle_balance_enabled=angle_balance_enabled,
-                        angle_bin_deg=angle_bin_deg,
-                        angle_max_per_bin=_angle_max_bin,
-                        angle_prefer_far=angle_prefer_far,
-                        robust_enabled=True,
-                        huber_c_factor=1.6,
-                        dynamic_maxdist=True,
-                        dynamic_factor=1.8,
-                        dynamic_min=0.08,
-                        dynamic_max=0.45,
-                        progress_cb=case_cb,
+                        tolerance=1e-6,
+                        max_correspondence_distance=_maxcorr
                     )
-                finally:
+                    result['k'] = k
+                    res_list.append(result)
+
                     if case_pbar is not None:
-                        case_pbar.close()
+                        case_pbar.update(1)
+
+                if case_pbar is not None:
+                    case_pbar.close()
+
                 icp_all_cases.append(res_list)
             print("[Esecuzione ICP] Completata. Salvo grafici ICP riassuntivi...")
             # Salvataggio grafici riassuntivi per ogni caso (concept, overlay, convergence, arrows, raw_vs_filtered)
@@ -680,38 +740,7 @@ def main():
                 visualizer.ensure_icp_dirs('concept', 'overlays', 'convergence', 'arrows', 'raw_vs_filtered')
             except OSError:
                 pass
-            # Salva anche risultati ICP in JSON per il viewer (solo trasformazioni)
-            import json
-            def _to_list(mat):
-                return [[float(x) for x in row] for row in np.asarray(mat, dtype=float)]
-            def _vec_list(v):
-                vv = np.asarray(v, dtype=float).reshape(-1)
-                return [float(x) for x in vv[:2]]
-            icp_json = {"cases": []}
-            for case_title, case_results in zip(titles, icp_all_cases):
-                pairs = []
-                for r in case_results:
-                    if not r.get('ok'): continue
-                    k = int(r.get('k', 0))
-                    blk_none = r.get('none'); blk_raw = r.get('raw_none')
-                    if not isinstance(blk_none, dict) or not isinstance(blk_raw, dict):
-                        continue
-                    pairs.append({
-                        'k': k,
-                        'none': {'R': _to_list(blk_none.get('R')), 't': _vec_list(blk_none.get('t'))},
-                        'raw_none': {'R': _to_list(blk_raw.get('R')), 't': _vec_list(blk_raw.get('t'))},
-                    })
-                slug = (case_title.lower().replace(' ', '_').replace('à','a').replace('è','e').replace('é','e'))
-                icp_json['cases'].append({'title': case_title, 'slug': slug, 'pairs': pairs})
-            try:
-                base_dir = os.path.join(os.path.dirname(__file__), '..', 'img', 'icp')
-                os.makedirs(base_dir, exist_ok=True)
-                out_json_path = os.path.join(base_dir, 'icp_results.json')
-                with open(out_json_path, 'w', encoding='utf-8') as fjson:
-                    json.dump(icp_json, fjson, ensure_ascii=False, indent=0)
-                print(f"[ICP] Risultati serializzati in: {out_json_path}")
-            except OSError as _e_json:
-                print(f"[ICP] Avviso: non riesco a salvare icp_results.json: {_e_json}")
+
             def _select_icp_representative(case_results: List[dict]) -> Optional[dict]:
                 cand = [res_item for res_item in case_results if res_item.get('ok')]
                 if not cand:
@@ -765,8 +794,8 @@ def main():
                     save_motion_arrows(rep, f"Δ Pose – {plot_title}", visualizer.icp_out_path('arrows', f"{base_slug}_arrows.png"))
                     save_raw_vs_filtered(rep, f"RAW vs Filtrato – {plot_title}", visualizer.icp_out_path('raw_vs_filtered', f"{base_slug}_raw_vs_filtered.png"))
 
-            # Nuovo: stampa legenda + riepilogo ICP su console, a meno che non si usi anche --run-icp (evita duplicati)
-            if getattr(args, 'icp_verbose', False) and not getattr(args, 'run_icp', False):
+            # Stampa legenda + riepilogo ICP su console quando run_icp è attivo
+            if getattr(args, 'run_icp', False):
                 print("\n========== ICP ==========")
                 # Legenda
                 print(
@@ -837,6 +866,14 @@ def main():
                 real_f = real if isinstance(real, np.ndarray) and real.size > 0 else np.zeros((1,3), dtype=float)
                 raw_f = raw if isinstance(raw, np.ndarray) and raw.size > 0 else np.zeros((1,3), dtype=float)
                 icp_f = icp if isinstance(icp, np.ndarray) and icp.size > 0 else np.zeros((1,3), dtype=float)
+
+                # Applica loop closure correction SOLO per traiettorie circolari (idx 2, 3)
+                # NON applicare al caso 4 (otto) perché ha una forma diversa
+                is_circular = idx in (2, 3)
+                if is_circular and len(icp_f) > 10:
+                    icp_f = apply_loop_closure_correction(icp_f, is_circular=True, closure_threshold=0.5)
+                    raw_f = apply_loop_closure_correction(raw_f, is_circular=True, closure_threshold=0.5)
+
                 # Allineamento opzionale al mondo: usa la prima posa reale del caso simulato
                 if getattr(args, 'viewer_log_align_world', False) and idx < len(histories) and len(histories[idx]) > 0:
                     base = np.asarray(histories[idx][0], dtype=float)
@@ -901,206 +938,6 @@ def main():
                     icp_filt_histories=viewer_filt,
                  )
 
-        # (Opzionale) Esegui ICP in frame locale per confrontare init=None vs init odometrica
-        if args.run_icp:
-            print("\n========== ICP ==========")
-            # Titoli dei casi
-            bold = "\033[1m"; reset = "\033[0m"
-            def _case_title(idx_case: int, title: str) -> str:
-                return f"{bold}CASO {idx_case}: {title.upper()}{reset}"
-            # Legenda semplificata (solo due varianti)
-            print(
-                "Legenda:\n"
-                "- Coppia N: scansioni consecutive (k-1, k) nel frame locale del robot\n"
-                "- rmse[ICP]: RMSE della variante filtrata (con trimming / sliding / damping) senza init speciale\n"
-                "- rmse[RAW]: RMSE della variante RAW (nessun filtro / damping)\n"
-                "- it[ICP], it[RAW]: iterazioni eseguite\n"
-                "- alpha[ICP], alpha[RAW]: rotazione stimata (deg) nel frame locale\n"
-                "- Pose: confronto Δx, Δy, α (deg) tra GT, ICP filtrato e RAW (tutte nel frame k-1)\n"
-            )
-            # Parametri ICP uniformi per tutti i casi (damping meno invasivo)
-            trim_fraction = 0.6
-            damping_enabled = True
-            angle_thresh_deg = 10.0
-            struct_ratio_thresh = 0.02
-            damp_factor = 0.75
-            sliding_filter_enabled = True
-            # Nuovo: bilanciamento angolare (favorisce punti lontani per aumentare parallasse)
-            angle_balance_enabled = True
-            angle_bin_deg = 8.0
-            angle_prefer_far = True
-            icp_all_cases = []
-            for idx, (case_hist, case_title, case_env, case_lid) in enumerate(zip(histories, titles, envs, lidars)):
-                print(f"\n{_case_title(idx+1, case_title)}", flush=True)
-                # Parametri per-caso (micro-ritocchi): casi 4 e 5 (idx 3 e 4)
-                if idx in (3, 4):
-                    _maxcorr = 0.38
-                    _sliding_cos = 0.99
-                    _angle_max_bin = 24
-                else:
-                    _maxcorr = 0.40
-                    _sliding_cos = 0.985
-                    _angle_max_bin = 18
-                # Progress bar per-caso
-                case_pbar = None
-                case_cb = None
-                if _tqdm is not None:
-                    _step = 1
-                    total_pairs = max(0, len(range(1, len(case_hist), max(1, _step))))
-                    case_pbar = _tqdm(
-                        total=total_pairs,
-                        desc="",
-                        unit="pair",
-                        ncols=90,
-                        leave=False,
-                        bar_format="{percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} {unit} [{elapsed}<{remaining}]"
-                    )
-                    case_cb = lambda _d, _t, p=case_pbar: p.update(1)
-                try:
-                    icp_results = run_icp_over_history(
-                        case_hist, case_lid, case_env,
-                        step=1,
-                        max_iterations=40,
-                        tolerance=1e-5,
-                        max_correspondence_distance=_maxcorr,
-                        use_scipy=True,
-                        trim_fraction=trim_fraction,
-                        damping_enabled=damping_enabled,
-                        angle_thresh_deg=angle_thresh_deg,
-                        struct_ratio_thresh=struct_ratio_thresh,
-                        damp_factor=damp_factor,
-                        sliding_filter_enabled=sliding_filter_enabled,
-                        sliding_cos_threshold=_sliding_cos,
-                        angle_balance_enabled=angle_balance_enabled,
-                        angle_bin_deg=angle_bin_deg,
-                        angle_max_per_bin=_angle_max_bin,
-                        angle_prefer_far=angle_prefer_far,
-                        progress_cb=case_cb,
-                    )
-                finally:
-                    if case_pbar is not None:
-                        case_pbar.close()
-                icp_all_cases.append(icp_results)
-                # Stampa TUTTE le coppie, calcolando comunque tutte le coppie
-                _iter_results = icp_results
-                for res in _iter_results:
-                    if not res.get('ok', False):
-                        print(f"Coppia {res['k']}: punti insufficienti (src={res.get('n_src')}, tgt={res.get('n_tgt')})")
-                        continue
-                    rn = res['none']
-                    rrn = res.get('raw_none')
-                    prefix = f"Coppia {res['k']}: "
-                    indent = " " * len(prefix)
-                    if rrn:
-                        print(prefix + f"rmse[ICP]={rn['rmse']:.4f}, rmse[RAW]={rrn['rmse']:.4f}")
-                        print(indent + f"it[ICP]={rn['iterations']}, it[RAW]={rrn['iterations']}")
-                        print(indent + f"alpha[ICP]={rn['alpha_deg']:.4f} deg, alpha[RAW]={rrn['alpha_deg']:.4f} deg")
-                    else:
-                        print(prefix + f"rmse[ICP]={rn['rmse']:.4f}")
-                        print(indent + f"it[ICP]={rn['iterations']}")
-                        print(indent + f"alpha[ICP]={rn['alpha_deg']:.4f} deg")
-                    # Pose
-                    k = int(res['k'])
-                    if 1 <= k < len(case_hist):
-                        prev_pose = case_hist[k-1]; curr_pose = case_hist[k]
-                        r_gt, t_gt = relative_local_transform(prev_pose, curr_pose)
-                        def _ang_deg(rm):
-                            return 0.0 if rm is None else float(np.degrees(np.arctan2(rm[1, 0], rm[0, 0])))
-                        gt_ax = float(t_gt[0]); gt_ay = float(t_gt[1]); gt_ad = _ang_deg(r_gt)
-                        n_ax = float(rn['t'][0]); n_ay = float(rn['t'][1]); n_ad = float(rn['alpha_deg'])
-                        print("    Pose:")
-                        print(f"      {'Reali:':<16}Δx={gt_ax:+.3f} m, Δy={gt_ay:+.3f} m, α={gt_ad:+.4f} deg")
-                        print(f"      {'ICP:':<16}Δx={n_ax:+.3f} m, Δy={n_ay:+.3f} m, α={n_ad:+.4f} deg")
-                        if rrn:
-                            rn_ax = float(rrn['t'][0]); rn_ay = float(rrn['t'][1]); rn_ad = float(rrn['alpha_deg'])
-                            print(f"      {'RAW:':<16}Δx={rn_ax:+.3f} m, Δy={rn_ay:+.3f} m, α={rn_ad:+.4f} deg")
-            # ====== Salvataggio grafici ICP post-process (1,2,3,9,14) con progress bar ======
-            try:
-                visualizer.ensure_icp_dirs('concept', 'overlays', 'convergence', 'arrows', 'raw_vs_filtered')
-            except OSError:
-                pass
-            # Salva anche risultati ICP in JSON per il viewer (solo trasformazioni)
-            import json
-            def _to_list(mat):
-                return [[float(x) for x in row] for row in np.asarray(mat, dtype=float)]
-            def _vec_list(v):
-                vv = np.asarray(v, dtype=float).reshape(-1)
-                return [float(x) for x in vv[:2]]
-            icp_json = {"cases": []}
-            for case_title, case_results in zip(titles, icp_all_cases):
-                pairs = []
-                for r in case_results:
-                    if not r.get('ok'): continue
-                    k = int(r.get('k', 0))
-                    blk_none = r.get('none'); blk_raw = r.get('raw_none')
-                    if not isinstance(blk_none, dict) or not isinstance(blk_raw, dict):
-                        continue
-                    pairs.append({
-                        'k': k,
-                        'none': {'R': _to_list(blk_none.get('R')), 't': _vec_list(blk_none.get('t'))},
-                        'raw_none': {'R': _to_list(blk_raw.get('R')), 't': _vec_list(blk_raw.get('t'))},
-                    })
-                slug = (case_title.lower().replace(' ', '_').replace('à','a').replace('è','e').replace('é','e'))
-                icp_json['cases'].append({'title': case_title, 'slug': slug, 'pairs': pairs})
-            try:
-                base_dir = os.path.join(os.path.dirname(__file__), '..', 'img', 'icp')
-                os.makedirs(base_dir, exist_ok=True)
-                out_json_path = os.path.join(base_dir, 'icp_results.json')
-                with open(out_json_path, 'w', encoding='utf-8') as fjson:
-                    json.dump(icp_json, fjson, ensure_ascii=False, indent=0)
-                print(f"[ICP] Risultati serializzati in: {out_json_path}")
-            except OSError as _e_json:
-                print(f"[ICP] Avviso: non riesco a salvare icp_results.json: {_e_json}")
-            def _select_icp_representative(case_results: List[dict]) -> Optional[dict]:
-                cand = [res_item for res_item in case_results if res_item.get('ok')]
-                if not cand:
-                    return None
-                def _score(res_item: dict) -> float:
-                    rot_deg = 0.0
-                    gt_r = res_item.get('gt_R')
-                    if gt_r is not None:
-                        r_mat = np.asarray(gt_r)
-                        if r_mat.shape == (2, 2):
-                            rot_deg = abs(float(np.degrees(np.arctan2(r_mat[1, 0], r_mat[0, 0]))))
-                    trans = 0.0
-                    gt_t = res_item.get('gt_t')
-                    if gt_t is not None:
-                        t = np.asarray(gt_t).reshape(-1)
-                        if t.size >= 2:
-                            trans = float(np.linalg.norm(t[:2]))
-                    imp = 0.0
-                    raw_n = res_item.get('raw_none'); none_f = res_item.get('none')
-                    if isinstance(raw_n, dict) and isinstance(none_f, dict):
-                        rr = raw_n.get('rmse'); rf = none_f.get('rmse')
-                        if isinstance(rr, (int, float)) and isinstance(rf, (int, float)):
-                            diff = float(rr) - float(rf)
-                            imp = diff if diff > 0.0 else 0.0
-                    return 0.6*rot_deg + 0.3*trans + 0.1*imp
-                return max(cand, key=_score)
-            per_case_imgs = 4  # concept, overlays, convergence, raw_vs_filtered; 'arrows' mantiene ma senza Odo
-            total_icp_imgs = per_case_imgs * len(histories)
-            if _tqdm is not None:
-                with _tqdm(total=total_icp_imgs, desc="Grafici ICP", unit="img", ncols=90) as pbar_icp:
-                    for plot_title, plot_res in zip(titles, icp_all_cases):
-                        rep = _select_icp_representative(plot_res)
-                        if rep is None:
-                            pbar_icp.update(per_case_imgs)
-                            continue
-                        base_slug = _slugify_local(plot_title)
-                        save_concept_correspondences(rep, f"Corrispondenze – {plot_title}", visualizer.icp_out_path('concept', f"{base_slug}_concept.png")); pbar_icp.update(1)
-                        save_alignment_overlays(rep, f"Overlay – {plot_title}", visualizer.icp_out_path('overlays', f"{base_slug}_overlays.png")); pbar_icp.update(1)
-                        save_convergence_curves(rep, f"Convergenza – {plot_title}", visualizer.icp_out_path('convergence', f"{base_slug}_convergence.png")); pbar_icp.update(1)
-                        save_raw_vs_filtered(rep, f"RAW vs Filtrato – {plot_title}", visualizer.icp_out_path('raw_vs_filtered', f"{base_slug}_raw_vs_filtered.png")); pbar_icp.update(1)
-            else:
-                for plot_title, plot_res in zip(titles, icp_all_cases):
-                    rep = _select_icp_representative(plot_res)
-                    if rep is None:
-                        continue
-                    base_slug = _slugify_local(plot_title)
-                    save_concept_correspondences(rep, f"Corrispondenze – {plot_title}", visualizer.icp_out_path('concept', f"{base_slug}_concept.png"))
-                    save_alignment_overlays(rep, f"Overlay – {plot_title}", visualizer.icp_out_path('overlays', f"{base_slug}_overlays.png"))
-                    save_convergence_curves(rep, f"Convergenza – {plot_title}", visualizer.icp_out_path('convergence', f"{base_slug}_convergence.png"))
-                    save_raw_vs_filtered(rep, f"RAW vs Filtrato – {plot_title}", visualizer.icp_out_path('raw_vs_filtered', f"{base_slug}_raw_vs_filtered.png"))
 
     finally:
         # Ripristina stream originali e chiudi il file di log

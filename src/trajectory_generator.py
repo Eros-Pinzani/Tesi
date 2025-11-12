@@ -51,15 +51,36 @@ class TrajectoryGenerator:
 
     @staticmethod
     def eight(v, radius, T, dt):
-        """Traiettoria "otto" molto semplice: prima metà curvatura positiva, seconda metà curvatura negativa.
-        Non è una lemniscata esatta ma un concatenamento di due archi con stessa |omega|."""
-        n = int(np.ceil(T / dt))              # Numero di step discreti totali in cui dividiamo la durata T
-        mid = n // 2                          # Indice di separazione tra prima e seconda metà della traiettoria
-        vs = np.full(n, v)                    # Velocità lineare costante v in tutti gli step
-        omegas = np.zeros(n)                  # Pre-allocazione array velocità angolare
-        omegas[:mid] = v / float(radius)      # Prima metà: curvatura costante (giro "a sinistra" se theta cresce)
-        omegas[mid:] = -v / float(radius)     # Seconda metà: curvatura opposta (giro "a destra"), crea il cambio di lobo
-        return vs, omegas                     # Ritorna i profili (v_k, omega_k) per ogni passo
+        """Traiettoria "otto" migliorata con transizione smooth tra i due lobi.
+        Prima metà: cerchio orario, seconda metà: cerchio antiorario.
+        Transizione graduale molto smooth per evitare discontinuità."""
+        n = int(np.ceil(T / dt))              # Numero di step discreti totali
+        mid = n // 2                          # Punto di transizione tra i due lobi
+        vs = np.full(n, v)                    # Velocità lineare costante
+        omegas = np.zeros(n)                  # Pre-allocazione velocità angolare
+
+        # Zona di transizione: 15% del tempo totale (più ampia per smooth migliore)
+        transition_width = max(3, int(0.15 * n))
+        transition_start = mid - transition_width // 2
+        transition_end = mid + transition_width // 2
+
+        omega_val = v / float(radius)
+
+        # Prima metà: curvatura positiva
+        omegas[:transition_start] = omega_val
+
+        # Zona di transizione: interpolazione smooth con coseno
+        for i in range(transition_start, min(transition_end, n)):
+            # alpha va da 0 a 1 nella zona di transizione
+            alpha = (i - transition_start) / float(transition_end - transition_start)
+            # Interpolazione smooth usando coseno (smooth in derivata)
+            smooth_alpha = 0.5 * (1 - np.cos(np.pi * alpha))
+            omegas[i] = omega_val * (1 - 2 * smooth_alpha)  # Da +omega a -omega
+
+        # Seconda metà: curvatura negativa
+        omegas[transition_end:] = -omega_val
+
+        return vs, omegas
 
     @staticmethod
     def random_walk(v_mean, omega_std, T, dt, seed=None):

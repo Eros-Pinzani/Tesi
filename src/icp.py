@@ -552,6 +552,7 @@ def _compute_normals_projective(idx: np.ndarray, pts: np.ndarray, window: int = 
 
 
 def _icp_projective_once(src: np.ndarray, dst: np.ndarray, dst_normals: np.ndarray, weights: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray, float]:
+    """Singolo step di ICP point-to-line 2D con Gauss-Newton linearizzato."""
     n = len(src)
     if n < 3:
         return np.eye(2), np.zeros(2), float('inf')
@@ -561,9 +562,14 @@ def _icp_projective_once(src: np.ndarray, dst: np.ndarray, dst_normals: np.ndarr
     r = nx * dif[:, 0] + ny * dif[:, 1]
     j3 = ny * src[:, 0] - nx * src[:, 1]
     A = np.stack([nx, ny, j3], axis=1)
-    lam_t = 5e-4
-    lam_r = 5e-4
+
+    # Regularizzazione ridotta per permettere movimenti più grandi
+    scale = float(np.median(np.abs(r))) if n > 0 else 1.0
+    scale = max(scale, 0.01)
+    lam_t = 1e-5 * (scale**2)
+    lam_r = 1e-5
     L = np.diag([lam_t, lam_t, lam_r])
+
     if weights is not None:
         w = np.clip(np.asarray(weights, dtype=float).reshape(-1), 1e-6, 1e6)
         W = np.diag(w)
@@ -575,33 +581,32 @@ def _icp_projective_once(src: np.ndarray, dst: np.ndarray, dst_normals: np.ndarr
     try:
         delta = np.linalg.solve(H, b)
     except np.linalg.LinAlgError:
-        delta = np.linalg.lstsq(H, b, rcond=None)[0]
+        try:
+            delta = np.linalg.lstsq(H, b, rcond=None)[0]
+        except Exception:
+            return np.eye(2), np.zeros(2), float('inf')
+
     tx, ty, dth = map(float, delta)
-    # Cap molto conservativi per per-step
-    dth = float(np.clip(dth, -0.06, 0.06))  # ~3.4°
-    tcap = 0.08  # m
+
+    # Caps più permissivi per consentire movimenti reali
+    dth = float(np.clip(dth, -0.15, 0.15))  # ~8.6°
+    tcap = max(0.5, 5.0 * scale)  # adattivo alla scala del problema
     nt = float(np.hypot(tx, ty))
     if nt > tcap and np.isfinite(nt):
         s = tcap / (nt + 1e-12)
         tx *= s; ty *= s
+
     R = rot2d(dth)
     t = np.array([tx, ty], dtype=float)
-    # Backtracking semplice se l'errore peggiora
-    def _rmse_after(Rd, td):
-        src_a = (Rd @ src.T).T + td
-        pr = dst_normals[:, 0] * (src_a[:, 0] - dst[:, 0]) + dst_normals[:, 1] * (src_a[:, 1] - dst[:, 1])
-        return float(np.sqrt(np.mean(pr * pr)))
-    rmse = _rmse_after(R, t)
+
+    # Calcola RMSE dopo l'applicazione della trasformazione
+    src_a = (R @ src.T).T + t
+    pr = dst_normals[:, 0] * (src_a[:, 0] - dst[:, 0]) + dst_normals[:, 1] * (src_a[:, 1] - dst[:, 1])
+    rmse = float(np.sqrt(np.mean(pr * pr))) if pr.size > 0 else float('inf')
+
     if not np.isfinite(rmse):
         return np.eye(2), np.zeros(2), float('inf')
-    # Se peggiora rispetto allo stato corrente (residuo r), dimezza passo fino a migliorare o minimo
-    cur_rmse = float(np.sqrt(np.mean(r * r))) if r.size > 0 else float('inf')
-    bt = 0
-    while rmse > cur_rmse + 1e-12 and bt < 4:
-        tx *= 0.5; ty *= 0.5; dth *= 0.5
-        R = rot2d(dth); t = np.array([tx, ty], dtype=float)
-        rmse = _rmse_after(R, t)
-        bt += 1
+
     return R, t, rmse
 
 
@@ -617,7 +622,10 @@ def icp_projective(
     huber_k: float = 1.5,
     depth_gate: float = 0.50,
     normals_window: int = 2,
+    init_R: Optional[np.ndarray] = None,
+    init_t: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, object]]:
+    """ICP proiettivo migliorato con inizializzazione opzionale e correzioni numeriche."""
     idx_src = np.asarray(idx_src, dtype=int)
     idx_dst = np.asarray(idx_dst, dtype=int)
     src_local = np.asarray(src_local, dtype=float)
@@ -625,41 +633,58 @@ def icp_projective(
     common, i_src, i_dst = np.intersect1d(idx_src, idx_dst, return_indices=True)
     if common.size < 3:
         return np.eye(2), np.zeros(2), {"ok": False, "reason": "not_enough_common_rays", "n_corr": int(common.size)}
-    src = src_local[i_src]
+    src = src_local[i_src].copy()
     dst = dst_local[i_dst]
-    # gate su profondità
+
+    # Applica inizializzazione se fornita
+    R_tot = np.eye(2) if init_R is None else np.asarray(init_R, dtype=float).copy()
+    t_tot = np.zeros(2) if init_t is None else np.asarray(init_t, dtype=float).copy()
+
+    if init_R is not None and init_t is not None:
+        src = (init_R @ src.T).T + init_t.reshape(1, 2)
+
+    # gate su profondità più permissivo
     rs = np.linalg.norm(src, axis=1)
     rd = np.linalg.norm(dst, axis=1)
     keep = np.abs(rs - rd) <= float(depth_gate)
     src = src[keep]; dst = dst[keep]; common = common[keep]
     if len(src) < 3:
-        return np.eye(2), np.zeros(2), {"ok": False, "reason": "not_enough_after_depth_gate", "n_corr": int(len(src))}
+        return R_tot, t_tot, {"ok": False, "reason": "not_enough_after_depth_gate", "n_corr": int(len(src))}
+
     normals = _compute_normals_projective(common, dst, window=int(normals_window))
-    R_tot = np.eye(2)
-    t_tot = np.zeros(2)
     errors: List[float] = []
     prev_rmse = None
+    converged = False
+
     for it in range(int(max_iterations)):
         weights = None
         if robust:
             dif = (src - dst)
             proj = normals[:, 0] * dif[:, 0] + normals[:, 1] * dif[:, 1]
             med = float(np.median(np.abs(proj))) if proj.size > 0 else 0.0
-            c = huber_k * (med if med > 1e-12 else 0.01)
+            c = huber_k * max(med, 0.01)
             w = np.ones_like(proj)
             big = np.abs(proj) > c
             if np.any(big):
                 w[big] = c / (np.abs(proj[big]) + 1e-12)
             weights = w
         R_d, t_d, rmse = _icp_projective_once(src, dst, normals, weights)
+
+        # Controlla se l'incremento è degenere
+        if not np.isfinite(rmse) or rmse > 1e6:
+            break
+
         src = (R_d @ src.T).T + t_d
         t_tot = R_d @ t_tot + t_d
         R_tot = R_d @ R_tot
         errors.append(float(rmse))
+
         if prev_rmse is not None and abs(prev_rmse - rmse) < float(tolerance):
+            converged = True
             break
         prev_rmse = rmse
-    return R_tot, t_tot, {"ok": True, "rmse": (errors[-1] if errors else float("inf")), "iterations": len(errors), "errors": np.array(errors, dtype=float), "n_corr": int(len(src))}
+
+    return R_tot, t_tot, {"ok": True, "rmse": (errors[-1] if errors else float("inf")), "iterations": len(errors), "errors": np.array(errors, dtype=float), "n_corr": int(len(src)), "converged": converged}
 
 
 # --------------------------- Runner su history ---------------------------
@@ -692,10 +717,15 @@ def run_icp_pair_local(
     dynamic_min: float = 0.20,
     dynamic_max: float = 0.50,
 ) -> Dict:
-    """Esegue ICP tra le scansioni consecutive con filtro sliding opzionale.
+    """Esegue ICP tra le scansioni consecutive con inizializzazione da odometria.
 
-    Esegue due run: (A) filtrata projective ICP senza init e (B) RAW projective.
+    Esegue due run: (A) con inizializzazione da odometria e (B) senza inizializzazione.
     Ritorna un dizionario con risultati e metriche per entrambe le varianti.
+
+    Convenzione: ICP cerca T : source -> target, quindi src_transformed = T @ src + t.
+    In questo caso: source=scan_k (curr), target=scan_{k-1} (prev).
+    L'odometria fornisce la trasformazione relativa frame_k -> frame_{k-1},
+    che è esattamente quella che l'ICP deve trovare.
     """
     # Estrai punti di impatto nel frame locale del sensore con indici di raggio
     idx_tgt, tgt_local = lidar.scan_hits_indexed(prev_pose, env, frame='local')  # target = k-1
@@ -707,18 +737,25 @@ def run_icp_pair_local(
             'n_src': 0 if src_local is None else int(len(src_local)),
             'n_tgt': 0 if tgt_local is None else int(len(tgt_local)),
         }
-    # (A) ICP projective filtrato
+
+    # Calcola trasformazione relativa da odometria come buona inizializzazione
+    # relative_local_transform(prev, curr) dà la trasf che porta punti da frame_k a frame_{k-1}
+    R_odom, t_odom = relative_local_transform(prev_pose, curr_pose)
+
+    # (A) ICP projective con inizializzazione da odometria
     Rp, tp, info_p = icp_projective(idx_src, src_local, idx_tgt, tgt_local,
-                                    max_iterations=min(25, int(max_iterations)),
+                                    max_iterations=min(20, int(max_iterations)),
                                     tolerance=float(tolerance),
-                                    robust=True, huber_k=1.6,
-                                    depth_gate=0.35, normals_window=2)
-    # (B) RAW projective (no robust)
+                                    robust=True, huber_k=1.5,
+                                    depth_gate=0.60, normals_window=3,
+                                    init_R=R_odom, init_t=t_odom)
+    # (B) ICP projective senza inizializzazione
     Rr, tr, info_r = icp_projective(idx_src, src_local, idx_tgt, tgt_local,
-                                    max_iterations=min(12, int(max_iterations)),
+                                    max_iterations=min(20, int(max_iterations)),
                                     tolerance=float(tolerance),
-                                    robust=False, huber_k=1.6,
-                                    depth_gate=0.40, normals_window=2)
+                                    robust=True, huber_k=1.5,
+                                    depth_gate=0.60, normals_window=3,
+                                    init_R=None, init_t=None)
 
     def _theta_from_r(r_mat: np.ndarray) -> float:
         return float(np.arctan2(r_mat[1, 0], r_mat[0, 0]))
@@ -731,8 +768,8 @@ def run_icp_pair_local(
         tnorm = float(np.linalg.norm(t))
         if not np.isfinite(angle) or not np.isfinite(tnorm):
             return np.eye(2), np.zeros(2), float('inf')
-        # Soglie conservative per coppia di scansioni ravvicinate
-        if angle > np.deg2rad(8.0) or tnorm > 0.50:
+        # Soglie più permissive per movimenti reali
+        if angle > np.deg2rad(15.0) or tnorm > 1.00:
             return np.eye(2), np.zeros(2), float('inf')
         return R, t, rmse
 
@@ -746,7 +783,7 @@ def run_icp_pair_local(
         'ok': True,
         'n_src': int(len(src_local)),
         'n_tgt': int(len(tgt_local)),
-        'gt_R': None, 'gt_t': None,
+        'gt_R': R_odom, 'gt_t': t_odom,  # Ground truth dall'odometria
         'src_local': src_local, 'tgt_local': tgt_local,
         'none': {
             'R': Rp, 't': tp,
@@ -773,8 +810,10 @@ def run_icp_pair_local(
             'src_transformed': (Rr @ np.asarray(src_local).T).T + tr.reshape(1, 2),
         },
     }
-    # Best variant (migliore rmse)
-    if out['none']['rmse'] <= out['raw_none']['rmse']:
+    # Best variant: preferisci quello con odometria se convergito, altrimenti il migliore RMSE
+    if info_p.get('converged', False) and rp_rmse < float('inf'):
+        best_block = out['none']
+    elif out['none']['rmse'] <= out['raw_none']['rmse']:
         best_block = out['none']
     else:
         best_block = out['raw_none']

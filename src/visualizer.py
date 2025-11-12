@@ -718,7 +718,7 @@ def show_trajectories_carousel(
         if idxc not in cache:
             info_artist = fig.text(0.5, 0.02, f"Calcolo ICP per: {title}...", ha='center', va='bottom', fontsize=10)
             fig.canvas.draw_idle()
-            # Primo tentativo: usa traiettorie fornite dal log, se disponibili
+            # Usa traiettorie fornite dal log, se disponibili; altrimenti calcola ora
             icp_res_trajs = None
             if icp_raw_histories is not None or icp_filt_histories is not None:
                 raw_arr = None if icp_raw_histories is None else icp_raw_histories[idxc]
@@ -728,66 +728,11 @@ def show_trajectories_carousel(
                         'raw_none': np.asarray(raw_arr, dtype=float),
                         'none': np.asarray(filt_arr, dtype=float),
                     }
-            # Se esiste JSON precomputato, usalo; altrimenti calcola ora
-            if icp_res_trajs is None:
-                import os, json
-                json_path = os.path.join(os.path.dirname(__file__), '..', 'img', 'icp', 'icp_results.json')
-                if os.path.exists(json_path):
-                    try:
-                        with open(json_path, 'r', encoding='utf-8') as fj:
-                            data = json.load(fj)
-                        # Trova caso per titolo
-                        slug_case = title.lower().replace(' ', '_').replace('à', 'a').replace('è', 'e').replace('é', 'e')
-                        case = next(
-                            (c for c in data.get('cases', []) if c.get('slug') == slug_case or c.get('title') == title),
-                            None)
-                        if case and case.get('pairs'):
-                            # Accumula traiettoria usando le stesse trasformazioni del JSON
-                            def _acc_from_pairs(hist: np.ndarray, pairs: list, key: str) -> np.ndarray:
-                                n = len(hist)
-                                out = np.zeros((n, 3), dtype=float)
-                                out[0, :] = hist[0]
-                                th0 = float(out[0, 2])
-                                r_w_prev = np.array([[np.cos(th0), -np.sin(th0)], [np.sin(th0), np.cos(th0)]], dtype=float)
-                                by_k = {int(p['k']): p for p in pairs}
-                                for k in range(1, n):
-                                    x_prev, y_prev, _ = map(float, out[k - 1])
-                                    p = by_k.get(k)
-                                    if not p:
-                                        out[k, :] = out[k - 1]
-                                        continue
-                                    bk = p.get(key)
-                                    if not bk:
-                                        out[k, :] = out[k - 1]
-                                        continue
-                                    r_rel = np.asarray(bk['R'], dtype=float)
-                                    t_rel = np.asarray(bk['t'], dtype=float).reshape(2)
-                                    if r_rel.shape != (2, 2) or t_rel.shape != (2,):
-                                        out[k, :] = out[k - 1]
-                                        continue
-                                    # Composizione precedente: world_k = world_{k-1} + R_w_prev * t_rel ; R_w_k = R_w_prev * R_rel
-                                    t_world = r_w_prev @ t_rel
-                                    x_k = x_prev + float(t_world[0])
-                                    y_k = y_prev + float(t_world[1])
-                                    r_w_k = r_w_prev @ r_rel
-                                    try:
-                                        u, _s, vt = np.linalg.svd(r_w_k)
-                                        r_w_k = u @ vt
-                                    except Exception:
-                                        pass
-                                    th_k = float(np.arctan2(r_w_k[1, 0], r_w_k[0, 0]))
-                                    out[k, :] = [x_k, y_k, th_k]
-                                    r_w_prev = r_w_k
-                                return out
-                            pairs = case['pairs']
-                            icp_res_trajs = {
-                                'raw_none': _acc_from_pairs(hist, pairs, 'raw_none'),
-                                'none': _acc_from_pairs(hist, pairs, 'none'),
-                            }
-                    except Exception:
-                        icp_res_trajs = None
+
+            # Se non disponibili dal log, calcola ora
             if icp_res_trajs is None:
                 icp_res_trajs = _compute_icp_trajectories_for_case(hist, lid_cur, env_cur)
+
             cache[idxc] = icp_res_trajs
             _safe_remove_artist(info_artist)
             info_artist = None

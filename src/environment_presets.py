@@ -27,10 +27,28 @@ def setup_environment(histories: List[np.ndarray]) -> Environment:
         # Fallback in caso di problemi: bounds standard centrati in (0,0)
         env.set_bounds(-5.0, -5.0, 5.0, 5.0)
 
-    # Ostacoli di prova (vicini alle traiettorie per essere ben visibili)
-    env.add_rectangle(-0.25, -0.25, 0.25, 0.25)   # pilastro centrale
-    env.add_rectangle(2.0, -0.5, 3.0, 0.5)        # rettangolo lungo la retta
+    # Ostacoli di prova - AUMENTATI per dare più feature all'ICP
+    # Pilastro spostato lontano dall'origine per non bloccare traiettorie
+    env.add_rectangle(-1.5, -1.5, -1.0, -1.0)     # pilastro spostato in basso-sinistra
+
+    # Ostacoli a destra
+    env.add_rectangle(2.0, -0.5, 3.0, 0.5)        # rettangolo lungo
+    env.add_circle(3.5, 1.5, 0.4)                 # cerchio sopra
+    env.add_circle(2.5, -1.8, 0.3)                # cerchio sotto
+
+    # Ostacoli a sinistra
+    env.add_circle(-2.5, 1.2, 0.5)                # cerchio grande sinistra-sopra
+    env.add_rectangle(-3.5, -1.0, -2.5, -0.2)     # rettangolo sinistra-sotto
+    env.add_circle(-2.0, -2.5, 0.35)              # cerchio sinistra-basso
+
+    # Ostacoli lontani per profondità
     env.add_rectangle(6.0, 0.8, 7.0, 1.8)         # rettangolo sopra la retta
+    env.add_circle(5.5, -2.0, 0.4)                # cerchio lontano sotto
+
+    # Piccoli ostacoli asimmetrici per rompere simmetrie
+    env.add_circle(1.5, 2.5, 0.25)                # piccolo sopra
+    env.add_rectangle(-1.5, 2.0, -1.0, 2.3)       # piccolo rettangolo alto
+
     return env
 
 
@@ -223,6 +241,11 @@ def setup_environments_per_trajectory(histories: List[np.ndarray], titles: List[
 
         path_line = LineString(hist[:, :2].tolist())
         clearance = _safety_clearance(b_left, b_bottom, b_right, b_top)
+
+        # Per la traiettoria a 8 (idx=4), riduci la clearance per permettere più ostacoli
+        if idx == 4:
+            clearance *= 0.6  # Riduci del 40% per traiettoria a 8
+
         path_buffer = path_line.buffer(clearance, cap_style='flat', join_style='bevel')
 
         # La variabile 'candidates' rimane per retrocompatibilità, non usata direttamente
@@ -426,26 +449,85 @@ def setup_environments_per_trajectory(histories: List[np.ndarray], titles: List[
             _place_wall_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.84, 0.60, 0.92, 0.74, 0.04)
             _place_circle_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.08, 0.90, 0.04)
             _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.90, 0.90, 0.12, 0.10, -10.0, 'triangle')
+            # EXTRA per circolare - più ostacoli per feature ricche
+            _place_circle_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.28, 0.28, 0.045)
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.72, 0.72, 0.14, 0.10, 15.0, 'L')
+            _place_circle_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.50, 0.92, 0.035)
         elif idx == 3:
-            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.22, 0.20, 0.16, 0.12, -35.0, 'L')
+            # Ridotto ostacoli per circolare v variabile - rimuovo quelli in zone critiche
+            # RIMOSSO: _place_polygon_frac(..., 0.22, 0.20, ...) - zona bassa-sinistra critica
+            # RIMOSSO: _place_wall_frac(..., 0.18, 0.30, 0.26, 0.18, ...) - zona bassa-sinistra
             _place_circle_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.60, 0.84, 0.05)
             _place_wall_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.84, 0.34, 0.94, 0.38, 0.03)
             _place_circle_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.92, 0.10, 0.04)
             _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.88, 0.90, 0.12, 0.10, 8.0, 'triangle')
             _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.12, 0.82, 0.14, 0.12, 25.0, 'L')
-            _place_wall_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.18, 0.30, 0.26, 0.18, 0.025)
+            # EXTRA per circolare - posizioni sicure
+            _place_circle_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.35, 0.65, 0.05)
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.65, 0.35, 0.12, 0.14, -20.0, 'triangle')
+            _place_wall_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.48, 0.08, 0.58, 0.12, 0.03)
         elif idx == 4:
-            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.18, 0.44, 0.16, 0.18, 10.0, 'L')
+            # Ridotto numero di ostacoli per idx=4 e posizioni più sicure
+            # RIMOSSO: _place_polygon_frac(..., 0.18, 0.44, ...) - troppo a sinistra
+            # RIMOSSO: _place_wall_frac(..., 0.18, 0.18, 0.28, 0.30, ...) - interseca il lobo inferiore
             _place_wall_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.46, 0.22, 0.64, 0.22, 0.05)
             _place_circle_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.82, 0.56, 0.05)
             _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.70, 0.88, 0.14, 0.12, 5.0, 'triangle')
-            _place_wall_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.18, 0.18, 0.28, 0.30, 0.025)
             _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.88, 0.18, 0.12, 0.10, -18.0, 'triangle')
             _place_circle_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.52, 0.92, 0.035)
         else:
             _place_circle_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.20, 0.24, 0.05)
             _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.50, 0.72, 0.14, 0.16, -12.0, 'triangle')
             _place_wall_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.88, 0.80, 0.96, 0.88, 0.04)
+
+        # Aggiungi ostacoli fissi garantiti (non dipendono dalla logica di piazzamento automatico)
+        # Questi ostacoli vengono posizionati in coordinate frazionali (0-1) rispetto ai bounds
+        span_x = b_right - b_left
+        span_y = b_top - b_bottom
+
+        # Funzione helper per aggiungere ostacolo in coordinate frazionali
+        def add_obstacle_frac(fx, fy, r_frac=0.04, is_circle=True):
+            cx = b_left + fx * span_x
+            cy = b_bottom + fy * span_y
+            r = r_frac * min(span_x, span_y)
+            # Verifica che sia dentro i bounds
+            if (cx - r >= b_left and cx + r <= b_right and
+                cy - r >= b_bottom and cy + r <= b_top):
+                try:
+                    from shapely.geometry import Point as ShapelyPoint
+                    geom = ShapelyPoint(cx, cy).buffer(r, resolution=16)
+                    # Verifica che non intersechi il path
+                    if not geom.intersects(path_buffer):
+                        if is_circle:
+                            env_case.add_circle(cx, cy, r)
+                        else:
+                            env_case.add_rectangle(cx-r, cy-r, cx+r, cy+r)
+                except:
+                    pass
+
+        # Per la traiettoria a 8 (idx=4), evita ostacoli vicini al centro dove si incrocia
+        is_eight = (idx == 4)
+
+        # Aggiungi ostacoli in posizioni diverse per ogni caso
+        # Ostacolo basso-sinistra (0.25, 0.25) rimosso per idx=4 perché interseca la traiettoria
+        if not is_eight:
+            add_obstacle_frac(0.25, 0.25, 0.035, True)   # Basso-sinistra
+        add_obstacle_frac(0.75, 0.25, 0.04, False)   # Basso-destra
+        add_obstacle_frac(0.25, 0.75, 0.045, True)   # Alto-sinistra
+        add_obstacle_frac(0.75, 0.75, 0.035, True)   # Alto-destra
+
+        # Ostacoli centrali: solo se NON è la traiettoria a 8
+        if not is_eight:
+            add_obstacle_frac(0.5, 0.15, 0.03, False)    # Centro-basso
+            add_obstacle_frac(0.5, 0.85, 0.04, False)    # Centro-alto
+            add_obstacle_frac(0.35, 0.35, 0.025, True)   # Intermedio 1
+            add_obstacle_frac(0.65, 0.65, 0.03, True)    # Intermedio 2
+
+        # Ostacoli laterali: sempre sicuri
+        add_obstacle_frac(0.15, 0.5, 0.04, True)     # Sinistra-centro
+        add_obstacle_frac(0.85, 0.5, 0.035, True)    # Destra-centro
+        add_obstacle_frac(0.15, 0.15, 0.03, True)    # Angolo basso-sinistra extra
+        add_obstacle_frac(0.85, 0.85, 0.035, True)   # Angolo alto-destra extra
 
         envs.append(env_case)
 
