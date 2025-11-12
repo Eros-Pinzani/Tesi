@@ -620,8 +620,12 @@ def main():
             angle_bin_deg = 8.0
             angle_prefer_far = True
             for idx, (case_hist, case_title, case_env, case_lid) in enumerate(zip(histories, titles, envs, lidars)):
-                if idx in (3, 4):
+                if idx in (0, 1):  # rettilinei
+                    _maxcorr = 0.32; _sliding_cos = 0.985; _angle_max_bin = 16
+                    angle_bin_deg = 8.0; trim_fraction = 0.55
+                elif idx in (3, 4):  # circolari
                     _maxcorr = 0.38; _sliding_cos = 0.99; _angle_max_bin = 24
+                    angle_bin_deg = 8.0
                 else:
                     _maxcorr = 0.40; _sliding_cos = 0.985; _angle_max_bin = 18
                 # Progress bar per-caso
@@ -643,8 +647,8 @@ def main():
                     res_list = run_icp_over_history(
                         case_hist, case_lid, case_env,
                         step=1,
-                        max_iterations=40,
-                        tolerance=1e-5,
+                        max_iterations=50,
+                        tolerance=5e-6,
                         max_correspondence_distance=_maxcorr,
                         use_scipy=True,
                         trim_fraction=trim_fraction,
@@ -658,6 +662,12 @@ def main():
                         angle_bin_deg=angle_bin_deg,
                         angle_max_per_bin=_angle_max_bin,
                         angle_prefer_far=angle_prefer_far,
+                        robust_enabled=True,
+                        huber_c_factor=1.6,
+                        dynamic_maxdist=True,
+                        dynamic_factor=1.8,
+                        dynamic_min=0.08,
+                        dynamic_max=0.45,
                         progress_cb=case_cb,
                     )
                 finally:
@@ -1072,7 +1082,7 @@ def main():
             if _tqdm is not None:
                 with _tqdm(total=total_icp_imgs, desc="Grafici ICP", unit="img", ncols=90) as pbar_icp:
                     for plot_title, plot_res in zip(titles, icp_all_cases):
-                        rep = _select_icp_rerepresentative(plot_res)
+                        rep = _select_icp_representative(plot_res)
                         if rep is None:
                             pbar_icp.update(per_case_imgs)
                             continue

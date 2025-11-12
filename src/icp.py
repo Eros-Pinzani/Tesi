@@ -83,6 +83,113 @@ def _angle_uniform_subsample(points: np.ndarray, bin_deg: float = 10.0, max_per_
 
 # --------------------------- Mattoncini ICP ---------------------------
 
+def _estimate_normals_2d(points: np.ndarray, k: int = 8, use_scipy: bool = True) -> Optional[np.ndarray]:
+    """Stima normali 2D (unit) per ciascun punto via PCA locale sui k vicini.
+    Se ci sono meno di 3 punti, ritorna None. Usa SciPy KDTree se disponibile.
+    Il verso della normale è arbitrario (±n); per p2l il segno non influisce (si usa r^2).
+    """
+    pts = np.asarray(points, dtype=float)
+    n = len(pts)
+    if n < 3:
+        return None
+    k_eff = max(3, min(k, n - 1))
+    if use_scipy and _HAS_KDTREE:
+        try:
+            tree = _build_kdtree(pts)
+            dists, idxs = tree.query(pts, k=k_eff+1)  # include il punto stesso
+            normals = np.zeros((n, 2), dtype=float)
+            for i in range(n):
+                neigh_idx = idxs[i][1:] if np.ndim(idxs[i]) else []  # skip self
+                if len(neigh_idx) < 2:
+                    normals[i] = np.array([0.0, 0.0])
+                    continue
+                nb = pts[neigh_idx]
+                cen = nb.mean(axis=0)
+                cc = (nb - cen).T @ (nb - cen)
+                try:
+                    eigvals, eigvecs = np.linalg.eigh(cc)
+                    # normale = autovettore associato a autovalore minore (perp alla direzione principale)
+                    nvec = eigvecs[:, np.argmin(eigvals)]
+                    nrm = float(np.linalg.norm(nvec)) or 1.0
+                    normals[i] = nvec / nrm
+                except (np.linalg.LinAlgError, ValueError, FloatingPointError):
+                    normals[i] = np.array([0.0, 0.0])
+            # normalizza vettori nulli verso x
+            z = np.linalg.norm(normals, axis=1) < 1e-9
+            if np.any(z):
+                normals[z] = np.array([1.0, 0.0])
+            return normals
+        except Exception:
+            pass
+    # Fallback brute-force: usa solo PCA sull'intero set (grossolano)
+    cen = pts.mean(axis=0)
+    cc = (pts - cen).T @ (pts - cen)
+    try:
+        eigvals, eigvecs = np.linalg.eigh(cc)
+        nvec = eigvecs[:, np.argmin(eigvals)]
+        nrm = float(np.linalg.norm(nvec)) or 1.0
+        normals = np.tile(nvec / nrm, (n, 1))
+        return normals
+    except Exception:
+        return None
+
+
+def _p2l_increment(valid_src: np.ndarray, valid_dst: np.ndarray, normals: np.ndarray, *, weights: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray, float]:
+    """Calcola un incremento (R_delta, t_delta) punto-linea con Gauss-Newton lineare.
+    Approssimazione small-angle: R≈I + θJ, J=[[0,-1],[1,0]]. Parametri [tx, ty, θ].
+    Restituisce (R_delta, t_delta, rmse_along_normals).
+    """
+    n = len(valid_src)
+    if n < 3:
+        return np.eye(2), np.zeros(2), float('inf')
+    # Residui e jacobiani
+    dif = (valid_src - valid_dst)  # al passo attuale (src già trasformata dalle iterazioni precedenti)
+    nx = normals[:, 0]
+    ny = normals[:, 1]
+    # residuo lungo normale: r_i = n^T (p - q)
+    r = nx * dif[:, 0] + ny * dif[:, 1]
+    # Jacobiano: [n_x, n_y, (n_y * p_x - n_x * p_y)]
+    j3 = ny * valid_src[:, 0] - nx * valid_src[:, 1]
+    A = np.stack([nx, ny, j3], axis=1)  # N x 3
+    # Regularizzazione Tikhonov lieve per stabilità numerica
+    scale = float(np.median(np.linalg.norm(dif, axis=1))) if n > 0 else 1.0
+    if not np.isfinite(scale) or scale <= 1e-9:
+        scale = 1.0
+    lam_t = 1e-3 * (scale**2)
+    lam_r = 1e-3
+    L = np.diag([lam_t, lam_t, lam_r])
+    if weights is not None:
+        w = np.asarray(weights, dtype=float).reshape(-1)
+        w = np.clip(w, 1e-6, 1e6)
+        W = np.diag(w)
+        AtW = A.T @ W
+        H = AtW @ A + L
+        b = - AtW @ r
+    else:
+        H = A.T @ A + L
+        b = - A.T @ r
+    try:
+        delta = np.linalg.solve(H, b)
+    except np.linalg.LinAlgError:
+        try:
+            delta = np.linalg.lstsq(H, b, rcond=None)[0]
+        except Exception:
+            return np.eye(2), np.zeros(2), float('inf')
+    tx, ty, dth = map(float, delta)
+    # Limita incremento per stabilità
+    dth = float(np.clip(dth, -0.35, 0.35))
+    # cap traslazione a un valore plausibile (3*scale o 0.6 m minimum cap)
+    cap_t = max(0.6, 3.0 * scale)
+    tx = float(np.clip(tx, -cap_t, cap_t))
+    ty = float(np.clip(ty, -cap_t, cap_t))
+    r_delta = rot2d(dth)
+    t_delta = np.array([tx, ty], dtype=float)
+    # RMSE lungo le normali dopo l'aggiornamento (approssimato linearmente)
+    r_new = r + A @ np.array([tx, ty, dth])
+    rmse_n = float(np.sqrt(np.mean(r_new * r_new)))
+    return r_delta, t_delta, rmse_n
+
+
 def nearest_neighbors(src: np.ndarray, dst: np.ndarray, max_distance: Optional[float] = None, use_scipy: bool = True):
     """Per ogni punto src, trova il nearest neighbor in dst. Ritorna (idxs, dists, mask_inliers)."""
     if use_scipy and _HAS_KDTREE:
@@ -142,6 +249,11 @@ def icp_point_to_point(
     stop_if_init_good: bool = True,
     init_rmse_threshold: float = 0.10,
     adaptive_filters: bool = True,
+    mutual_filter_enabled: bool = True,
+    p2l_enabled: bool = True,
+    normals_k: int = 8,
+    max_step_angle_deg: float = 3.0,
+    max_step_trans: float = 0.5,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[Dict], np.ndarray]:
     """ICP point-to-point 2D con filtri (sliding, robust, damping) + bilanciamento angolare opzionale.
 
@@ -190,17 +302,34 @@ def icp_point_to_point(
 
     for it in range(int(max_iterations)):
         idxs, dists, mask = nearest_neighbors(src, dst, max_correspondence_distance, use_scipy=use_scipy)
+        # Mutual filter: tieni solo corrispondenze reciproche dst->src
+        if mutual_filter_enabled and mask.any():
+            try:
+                # Calcola mappa inversa (solo per i candidati in mask per efficienza)
+                valid_idx = np.where(mask)[0]
+                if valid_idx.size > 0:
+                    rev_src = dst[idxs[valid_idx]]
+                    idxs_rev, _d_rev, _m_rev = nearest_neighbors(rev_src, src, max_distance=None, use_scipy=use_scipy)
+                    # Accetta solo dove il vicino inverso punta allo stesso indice originale
+                    ok_back = (idxs_rev == valid_idx)
+                    full_mask = np.zeros_like(mask)
+                    full_mask[valid_idx[ok_back]] = True
+                    mask = mask & full_mask
+            except Exception:
+                pass
         # Adattività: se poche corrispondenze disabilita sliding/trim per non perdere informazione
         if adaptive_filters and mask.sum() < (2 * min_after_sliding):
             adaptive_sliding = False
             adaptive_trim = None
 
-        # Soglia dinamica per corrispondenze (stringe il max_distance effettivo in base alla mediana)
+        # Soglia dinamica (MAD robusta sulla distanza) per stringere max_distance effettivo
         if dynamic_maxdist and mask.any():
             vd = dists[mask]
             if vd.size >= 6:
                 med = float(np.median(vd))
-                thr_dyn = max(dynamic_min, min(dynamic_max, dynamic_factor * med))
+                mad = float(np.median(np.abs(vd - med))) or (med * 0.1) or 1e-6
+                thr_dyn = med + dynamic_factor * 1.4826 * mad
+                thr_dyn = float(np.clip(thr_dyn, dynamic_min, dynamic_max))
                 mask = mask & (dists <= thr_dyn)
 
         # Trimming corrispondenze più lontane
@@ -299,6 +428,72 @@ def icp_point_to_point(
                 r_delta = rot2d(angle_new)
                 t_delta = centroid_b - r_delta @ centroid_a
 
+        # Dopo aver ottenuto r_delta_raw/t_delta_raw e prima dell'aggiornamento, valuta P2L
+        r_delta = r_delta_raw
+        t_delta = t_delta_raw
+        rmse_choice = None
+        try:
+            d_valid = dists[mask]
+            rmse_choice = float(np.sqrt(np.mean(d_valid * d_valid))) if d_valid.size > 0 else float('inf')
+        except Exception:
+            rmse_choice = None
+        if p2l_enabled:
+            # Stima normali sui dst validi e calcola incremento P2L
+            normals = _estimate_normals_2d(valid_dst, k=int(normals_k), use_scipy=use_scipy)
+            if normals is not None:
+                w_pl = None
+                if robust_enabled and 'vd' in locals():
+                    vd_loc = dists[mask]
+                    if vd_loc.size >= 3:
+                        med = float(np.median(vd_loc))
+                        if med > 1e-12:
+                            c = huber_c_factor * med
+                            w = np.ones_like(vd_loc)
+                            big = vd_loc > c
+                            w[big] = c / (vd_loc[big] + 1e-12)
+                            w_pl = w
+                r_pl, t_pl, rmse_n = _p2l_increment(valid_src, valid_dst, normals, weights=w_pl)
+                # Valuta RMSE euclidea dopo l'incremento P2L
+                try:
+                    src_after = (r_pl @ valid_src.T).T + t_pl.reshape(1, 2)
+                    rmse_eu_p2l = float(np.sqrt(np.mean(np.sum((src_after - valid_dst)**2, axis=1))))
+                except Exception:
+                    rmse_eu_p2l = float('inf')
+                # Heuristica di scelta
+                use_p2l = False
+                try:
+                    s_max = float(np.max(s)) if 's' in locals() and len(s) > 0 else 1.0
+                    s_min = float(np.min(s)) if 's' in locals() and len(s) > 0 else 1.0
+                    struct_ratio = (s_min / s_max) if s_max > 1e-12 else 1.0
+                except Exception:
+                    struct_ratio = 1.0
+                tnorm = float(np.linalg.norm(t_pl))
+                cap_t_choice = max(0.6, 3.0 * (rmse_choice if (rmse_choice is not None and np.isfinite(rmse_choice)) else 0.1))
+                if struct_ratio < float(struct_ratio_thresh) * 1.4:
+                    use_p2l = True
+                if (rmse_choice is not None) and np.isfinite(rmse_eu_p2l) and (rmse_eu_p2l < 0.95 * rmse_choice):
+                    use_p2l = True
+                # Escludi P2L se traslazione e' eccessiva o non finita
+                if (not np.isfinite(tnorm)) or (tnorm > cap_t_choice):
+                    use_p2l = False
+                if use_p2l:
+                    r_delta = r_pl
+                    t_delta = t_pl
+        # Hard caps su incremento
+        try:
+            # clamp rotazione
+            ang = float(np.arctan2(r_delta[1, 0], r_delta[0, 0]))
+            ang_cap = float(np.deg2rad(max(0.1, max_step_angle_deg)))
+            if abs(ang) > ang_cap:
+                ang = np.sign(ang) * ang_cap
+                r_delta = rot2d(ang)
+            # clamp traslazione
+            tnorm = float(np.linalg.norm(t_delta))
+            tcap = max(0.05, float(max_step_trans))
+            if tnorm > tcap and np.isfinite(tnorm):
+                t_delta = t_delta * (tcap / (tnorm + 1e-12))
+        except Exception:
+            pass
         # Aggiorna i punti src e accumula la trasformazione
         src = (r_delta @ src.T).T + t_delta.reshape(1, 2)
         total_t = r_delta @ total_t + t_delta
@@ -328,6 +523,143 @@ def icp_point_to_point(
     source_transformed = (total_r @ np.asarray(source).T).T + total_t.reshape(1, 2)
     errors = np.array([h['mean_error'] for h in history], dtype=float)
     return total_r, total_t, source_transformed, history, errors
+
+
+# --------------------------- Projective ICP (basato su indice raggio) ---------------------------
+
+def _compute_normals_projective(idx: np.ndarray, pts: np.ndarray, window: int = 2) -> np.ndarray:
+    n = len(idx)
+    if n == 0:
+        return np.zeros((0, 2), dtype=float)
+    normals = np.zeros((n, 2), dtype=float)
+    for k in range(n):
+        k0 = max(0, k - int(window))
+        k1 = min(n - 1, k + int(window))
+        if k1 == k0:
+            normals[k] = np.array([1.0, 0.0])
+            continue
+        p0 = pts[k0]
+        p1 = pts[k1]
+        t = p1 - p0
+        nt = float(np.linalg.norm(t))
+        if nt < 1e-9 or not np.isfinite(nt):
+            normals[k] = np.array([1.0, 0.0])
+            continue
+        t = t / nt
+        nvec = np.array([-t[1], t[0]], dtype=float)
+        normals[k] = nvec / (float(np.linalg.norm(nvec)) + 1e-12)
+    return normals
+
+
+def _icp_projective_once(src: np.ndarray, dst: np.ndarray, dst_normals: np.ndarray, weights: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray, float]:
+    n = len(src)
+    if n < 3:
+        return np.eye(2), np.zeros(2), float('inf')
+    dif = (src - dst)
+    nx = dst_normals[:, 0]
+    ny = dst_normals[:, 1]
+    r = nx * dif[:, 0] + ny * dif[:, 1]
+    j3 = ny * src[:, 0] - nx * src[:, 1]
+    A = np.stack([nx, ny, j3], axis=1)
+    lam_t = 5e-4
+    lam_r = 5e-4
+    L = np.diag([lam_t, lam_t, lam_r])
+    if weights is not None:
+        w = np.clip(np.asarray(weights, dtype=float).reshape(-1), 1e-6, 1e6)
+        W = np.diag(w)
+        H = A.T @ W @ A + L
+        b = - A.T @ W @ r
+    else:
+        H = A.T @ A + L
+        b = - A.T @ r
+    try:
+        delta = np.linalg.solve(H, b)
+    except np.linalg.LinAlgError:
+        delta = np.linalg.lstsq(H, b, rcond=None)[0]
+    tx, ty, dth = map(float, delta)
+    # Cap molto conservativi per per-step
+    dth = float(np.clip(dth, -0.06, 0.06))  # ~3.4°
+    tcap = 0.08  # m
+    nt = float(np.hypot(tx, ty))
+    if nt > tcap and np.isfinite(nt):
+        s = tcap / (nt + 1e-12)
+        tx *= s; ty *= s
+    R = rot2d(dth)
+    t = np.array([tx, ty], dtype=float)
+    # Backtracking semplice se l'errore peggiora
+    def _rmse_after(Rd, td):
+        src_a = (Rd @ src.T).T + td
+        pr = dst_normals[:, 0] * (src_a[:, 0] - dst[:, 0]) + dst_normals[:, 1] * (src_a[:, 1] - dst[:, 1])
+        return float(np.sqrt(np.mean(pr * pr)))
+    rmse = _rmse_after(R, t)
+    if not np.isfinite(rmse):
+        return np.eye(2), np.zeros(2), float('inf')
+    # Se peggiora rispetto allo stato corrente (residuo r), dimezza passo fino a migliorare o minimo
+    cur_rmse = float(np.sqrt(np.mean(r * r))) if r.size > 0 else float('inf')
+    bt = 0
+    while rmse > cur_rmse + 1e-12 and bt < 4:
+        tx *= 0.5; ty *= 0.5; dth *= 0.5
+        R = rot2d(dth); t = np.array([tx, ty], dtype=float)
+        rmse = _rmse_after(R, t)
+        bt += 1
+    return R, t, rmse
+
+
+def icp_projective(
+    idx_src: np.ndarray,
+    src_local: np.ndarray,
+    idx_dst: np.ndarray,
+    dst_local: np.ndarray,
+    *,
+    max_iterations: int = 30,
+    tolerance: float = 1e-5,
+    robust: bool = True,
+    huber_k: float = 1.5,
+    depth_gate: float = 0.50,
+    normals_window: int = 2,
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, object]]:
+    idx_src = np.asarray(idx_src, dtype=int)
+    idx_dst = np.asarray(idx_dst, dtype=int)
+    src_local = np.asarray(src_local, dtype=float)
+    dst_local = np.asarray(dst_local, dtype=float)
+    common, i_src, i_dst = np.intersect1d(idx_src, idx_dst, return_indices=True)
+    if common.size < 3:
+        return np.eye(2), np.zeros(2), {"ok": False, "reason": "not_enough_common_rays", "n_corr": int(common.size)}
+    src = src_local[i_src]
+    dst = dst_local[i_dst]
+    # gate su profondità
+    rs = np.linalg.norm(src, axis=1)
+    rd = np.linalg.norm(dst, axis=1)
+    keep = np.abs(rs - rd) <= float(depth_gate)
+    src = src[keep]; dst = dst[keep]; common = common[keep]
+    if len(src) < 3:
+        return np.eye(2), np.zeros(2), {"ok": False, "reason": "not_enough_after_depth_gate", "n_corr": int(len(src))}
+    normals = _compute_normals_projective(common, dst, window=int(normals_window))
+    R_tot = np.eye(2)
+    t_tot = np.zeros(2)
+    errors: List[float] = []
+    prev_rmse = None
+    for it in range(int(max_iterations)):
+        weights = None
+        if robust:
+            dif = (src - dst)
+            proj = normals[:, 0] * dif[:, 0] + normals[:, 1] * dif[:, 1]
+            med = float(np.median(np.abs(proj))) if proj.size > 0 else 0.0
+            c = huber_k * (med if med > 1e-12 else 0.01)
+            w = np.ones_like(proj)
+            big = np.abs(proj) > c
+            if np.any(big):
+                w[big] = c / (np.abs(proj[big]) + 1e-12)
+            weights = w
+        R_d, t_d, rmse = _icp_projective_once(src, dst, normals, weights)
+        src = (R_d @ src.T).T + t_d
+        t_tot = R_d @ t_tot + t_d
+        R_tot = R_d @ R_tot
+        errors.append(float(rmse))
+        if prev_rmse is not None and abs(prev_rmse - rmse) < float(tolerance):
+            break
+        prev_rmse = rmse
+    return R_tot, t_tot, {"ok": True, "rmse": (errors[-1] if errors else float("inf")), "iterations": len(errors), "errors": np.array(errors, dtype=float), "n_corr": int(len(src))}
 
 
 # --------------------------- Runner su history ---------------------------
@@ -362,12 +694,12 @@ def run_icp_pair_local(
 ) -> Dict:
     """Esegue ICP tra le scansioni consecutive con filtro sliding opzionale.
 
-    Esegue due run: (A) senza init e (B) con init da odometria (relativa curr->prev nel frame locale).
+    Esegue due run: (A) filtrata projective ICP senza init e (B) RAW projective.
     Ritorna un dizionario con risultati e metriche per entrambe le varianti.
     """
-    # Estrai punti di impatto nel frame locale del sensore
-    tgt_local = lidar.scan_hits(prev_pose, env, frame='local')  # target = k-1
-    src_local = lidar.scan_hits(curr_pose, env, frame='local')  # source = k
+    # Estrai punti di impatto nel frame locale del sensore con indici di raggio
+    idx_tgt, tgt_local = lidar.scan_hits_indexed(prev_pose, env, frame='local')  # target = k-1
+    idx_src, src_local = lidar.scan_hits_indexed(curr_pose, env, frame='local')  # source = k
     if tgt_local is None or src_local is None or len(tgt_local) < 3 or len(src_local) < 3:
         return {
             'ok': False,
@@ -375,80 +707,41 @@ def run_icp_pair_local(
             'n_src': 0 if src_local is None else int(len(src_local)),
             'n_tgt': 0 if tgt_local is None else int(len(tgt_local)),
         }
+    # (A) ICP projective filtrato
+    Rp, tp, info_p = icp_projective(idx_src, src_local, idx_tgt, tgt_local,
+                                    max_iterations=min(25, int(max_iterations)),
+                                    tolerance=float(tolerance),
+                                    robust=True, huber_k=1.6,
+                                    depth_gate=0.35, normals_window=2)
+    # (B) RAW projective (no robust)
+    Rr, tr, info_r = icp_projective(idx_src, src_local, idx_tgt, tgt_local,
+                                    max_iterations=min(12, int(max_iterations)),
+                                    tolerance=float(tolerance),
+                                    robust=False, huber_k=1.6,
+                                    depth_gate=0.40, normals_window=2)
 
-    # (A) ICP senza inizializzazione (filtrato)
-    r_none, t_none, src_tf_none, hist_none, errs_none = icp_point_to_point(
-        src_local, tgt_local,
-        init_pose=None,
-        max_iterations=max_iterations,
-        tolerance=tolerance,
-        max_correspondence_distance=max_correspondence_distance,
-        trim_fraction=trim_fraction,
-        use_scipy=use_scipy,
-        verbose=False,
-        damping_enabled=damping_enabled,
-        angle_thresh_deg=angle_thresh_deg,
-        struct_ratio_thresh=struct_ratio_thresh,
-        damp_factor=damp_factor,
-        sliding_filter_enabled=sliding_filter_enabled,
-        sliding_cos_threshold=sliding_cos_threshold,
-        angle_balance_enabled=angle_balance_enabled,
-        angle_bin_deg=angle_bin_deg,
-        angle_max_per_bin=angle_max_per_bin,
-        angle_prefer_far=angle_prefer_far,
-        robust_enabled=robust_enabled,
-        huber_c_factor=huber_c_factor,
-        dynamic_maxdist=dynamic_maxdist,
-        dynamic_factor=dynamic_factor,
-        dynamic_min=dynamic_min,
-        dynamic_max=dynamic_max,
-    )
-    # (B) ICP RAW minimale (nessun filtro, nessun damping)
-    r_raw_none, t_raw_none, src_tf_raw_none, hist_raw_none, errs_raw_none = icp_point_to_point(
-        src_local, tgt_local,
-        init_pose=None,
-        max_iterations=max_iterations,
-        tolerance=tolerance,
-        max_correspondence_distance=None,
-        trim_fraction=None,
-        use_scipy=use_scipy,
-        verbose=False,
-        damping_enabled=False,
-        sliding_filter_enabled=False,
-        sliding_cos_threshold=sliding_cos_threshold,
-        angle_balance_enabled=False,
-        robust_enabled=False,
-        dynamic_maxdist=False,
-    )
     def _theta_from_r(r_mat: np.ndarray) -> float:
         return float(np.arctan2(r_mat[1, 0], r_mat[0, 0]))
     def _deg(rad: float) -> float:
         return float(rad * 180.0 / np.pi)
-    def _pose_errors(r_rel: np.ndarray, t_rel: np.ndarray) -> Tuple[float, float]:
-        x_prev, y_prev, th_prev = map(float, prev_pose)
-        x_curr, y_curr, th_curr = map(float, curr_pose)
-        ang_rel = float(np.arctan2(r_rel[1, 0], r_rel[0, 0]))
-        dx_w = np.cos(th_prev) * t_rel[0] - np.sin(th_prev) * t_rel[1]
-        dy_w = np.sin(th_prev) * t_rel[0] + np.cos(th_prev) * t_rel[1]
-        x_pred = x_prev + dx_w
-        y_pred = y_prev + dy_w
-        th_pred = th_prev + ang_rel
-        th_pred = (th_pred + np.pi) % (2 * np.pi) - np.pi
-        th_curr_wrapped = (th_curr + np.pi) % (2 * np.pi) - np.pi
-        trans_err = float(np.hypot(x_pred - x_curr, y_pred - y_curr))
-        rot_err = th_pred - th_curr_wrapped
-        rot_err = (rot_err + np.pi) % (2 * np.pi) - np.pi
-        return trans_err, abs(float(np.degrees(rot_err)))
-    none_trans_err, none_rot_err = _pose_errors(r_none, t_none)
-    raw_none_trans_err, raw_none_rot_err = _pose_errors(r_raw_none, t_raw_none)
-    best_key = min([
-        ('none', none_trans_err, r_none, t_none),
-        ('raw_none', raw_none_trans_err, r_raw_none, t_raw_none),
-    ], key=lambda x: x[1])
-    best_r = best_key[2]; best_t = best_key[3]
-    best_variant_name = best_key[0]
-    # Calcola errori della variante migliore prima di costruire l'output
-    best_trans_err, best_rot_err = _pose_errors(best_r, best_t)
+
+    # Plausibility checks: limita risultati assurdi (outlier)
+    def _plausible(R: np.ndarray, t: np.ndarray, rmse: float) -> Tuple[np.ndarray, np.ndarray, float]:
+        angle = abs(_theta_from_r(R))
+        tnorm = float(np.linalg.norm(t))
+        if not np.isfinite(angle) or not np.isfinite(tnorm):
+            return np.eye(2), np.zeros(2), float('inf')
+        # Soglie conservative per coppia di scansioni ravvicinate
+        if angle > np.deg2rad(8.0) or tnorm > 0.50:
+            return np.eye(2), np.zeros(2), float('inf')
+        return R, t, rmse
+
+    Rp, tp, rp_rmse = _plausible(Rp, tp, float(info_p.get('rmse', float('inf'))))
+    Rr, tr, rr_rmse = _plausible(Rr, tr, float(info_r.get('rmse', float('inf'))))
+    info_p['rmse'] = rp_rmse
+    info_r['rmse'] = rr_rmse
+
+    # Conversione blocchi con schema compatibile con il resto del codice
     out = {
         'ok': True,
         'n_src': int(len(src_local)),
@@ -456,42 +749,45 @@ def run_icp_pair_local(
         'gt_R': None, 'gt_t': None,
         'src_local': src_local, 'tgt_local': tgt_local,
         'none': {
-            'R': r_none, 't': t_none,
-            'alpha_rad': _theta_from_r(r_none),
-            'alpha_deg': _deg(_theta_from_r(r_none)),
-            'rmse': float(errs_none[-1]) if errs_none.size > 0 else float('inf'),
-            'iterations': int(len(hist_none)),
-            'n_corr_last': int(hist_none[-1]['n_corr']) if len(hist_none) > 0 else 0,
-            'pose_err_trans': none_trans_err,
-            'pose_err_rot_deg': none_rot_err,
-            'errs': errs_none,
-            'hist': hist_none,
-            'src_transformed': src_tf_none,
+            'R': Rp, 't': tp,
+            'alpha_rad': _theta_from_r(Rp),
+            'alpha_deg': _deg(_theta_from_r(Rp)),
+            'rmse': float(info_p.get('rmse', float('inf'))),
+            'iterations': int(info_p.get('iterations', 0)),
+            'n_corr_last': int(info_p.get('n_corr', 0)),
+            'pose_err_trans': None,
+            'pose_err_rot_deg': None,
+            'errs': info_p.get('errors', np.array([], dtype=float)),
+            'hist': [],
+            'src_transformed': (Rp @ np.asarray(src_local).T).T + tp.reshape(1, 2),
         },
         'raw_none': {
-            'R': r_raw_none, 't': t_raw_none,
-            'alpha_rad': _theta_from_r(r_raw_none),
-            'alpha_deg': _deg(_theta_from_r(r_raw_none)),
-            'rmse': float(errs_raw_none[-1]) if errs_raw_none.size > 0 else float('inf'),
-            'iterations': int(len(hist_raw_none)),
-            'n_corr_last': int(hist_raw_none[-1]['n_corr']) if len(hist_raw_none) > 0 else 0,
-            'errs': errs_raw_none,
-            'hist': hist_raw_none,
-            'src_transformed': src_tf_raw_none,
+            'R': Rr, 't': tr,
+            'alpha_rad': _theta_from_r(Rr),
+            'alpha_deg': _deg(_theta_from_r(Rr)),
+            'rmse': float(info_r.get('rmse', float('inf'))),
+            'iterations': int(info_r.get('iterations', 0)),
+            'n_corr_last': int(info_r.get('n_corr', 0)),
+            'errs': info_r.get('errors', np.array([], dtype=float)),
+            'hist': [],
+            'src_transformed': (Rr @ np.asarray(src_local).T).T + tr.reshape(1, 2),
         },
     }
-    # Blocchi variante migliore con attributi uniformi
-    chosen_block = out['none'] if best_variant_name == 'none' else out['raw_none']
+    # Best variant (migliore rmse)
+    if out['none']['rmse'] <= out['raw_none']['rmse']:
+        best_block = out['none']
+    else:
+        best_block = out['raw_none']
     out['best'] = {
-        'R': chosen_block['R'],
-        't': chosen_block['t'],
-        'alpha_rad': chosen_block['alpha_rad'],
-        'alpha_deg': chosen_block['alpha_deg'],
-        'rmse': chosen_block['rmse'],
-        'iterations': chosen_block['iterations'],
-        'n_corr_last': chosen_block['n_corr_last'],
-        'pose_err_trans': best_trans_err,
-        'pose_err_rot_deg': best_rot_err,
+        'R': best_block['R'],
+        't': best_block['t'],
+        'alpha_rad': best_block['alpha_rad'],
+        'alpha_deg': best_block['alpha_deg'],
+        'rmse': best_block['rmse'],
+        'iterations': best_block['iterations'],
+        'n_corr_last': best_block['n_corr_last'],
+        'pose_err_trans': None,
+        'pose_err_rot_deg': None,
     }
     return out
 

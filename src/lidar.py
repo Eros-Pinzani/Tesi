@@ -85,3 +85,28 @@ class Lidar:
             y_local = sa * dx + ca * dy
             return np.stack([x_local, y_local], axis=1)
         raise ValueError("frame deve essere 'world' o 'local'")
+
+    def scan_hits_indexed(self, robot_state, env, frame: str = 'world'):
+        """Ritorna gli hit con indice di raggio.
+
+        Restituisce (idx, pts) dove:
+        - idx: array di indici di raggio (int)
+        - pts: array Nx2 di punti nel frame richiesto ('world' o 'local')
+        I raggi senza impatto (a r_max) sono esclusi.
+        """
+        pts_w, ranges = self.scan(robot_state, env, return_ranges=True)
+        mask_hits = np.asarray(ranges) < float(self.r_max) - 1e-12
+        idx = np.nonzero(mask_hits)[0].astype(int)
+        pts_sel = np.asarray(pts_w)[mask_hits]
+        if frame == 'world':
+            return idx, pts_sel
+        if frame == 'local':
+            x, y, theta = map(float, robot_state)
+            ca = np.cos(-(theta + float(self.angle_offset)))
+            sa = np.sin(-(theta + float(self.angle_offset)))
+            dx = pts_sel[:, 0] - x
+            dy = pts_sel[:, 1] - y
+            x_local = ca * dx - sa * dy
+            y_local = sa * dx + ca * dy
+            return idx, np.stack([x_local, y_local], axis=1)
+        raise ValueError("frame deve essere 'world' o 'local'")
