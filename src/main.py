@@ -35,22 +35,85 @@ else:
 # Helper slugify locale (evita warning su uso di funzione privata) e precompila regex
 _slugify_re = re.compile(r'[^a-z0-9_\-]')
 
-# Tee per duplicare stdout/stderr su file e console
+# Regex per sopprimere nel file le righe di progress bar e "Salvataggio immagini"
+# - Righe che iniziano con "Salvataggio immagini" (tqdm o ASCII fallback)
+# - Righe di tqdm con percentuale e barra (es. " 42%|####...") ovunque nella riga
+_prog_re_salva = re.compile(r"^\s*Salvataggio immagini\b")
+_prog_re_tqdm = re.compile(r"\b\d{1,3}%\|")
+
+# Tee per duplicare stdout/stderr su file e console, filtrando le progress nel file
 class _Tee:
     def __init__(self, primary, secondary):
-        self._primary = primary  # tipicamente console (già wrappata da colorama)
-        self._secondary = secondary  # file
-        # Propaga alcune proprietà utili
+        self._primary = primary
+        self._secondary = secondary
         self.encoding = getattr(primary, 'encoding', 'utf-8')
+        self._buf = ''
+        self._suppressed_last = False  # evita righe vuote dopo soppressione
+
+    def _should_suppress_line(self, line: str) -> bool:
+        if not line:
+            return False
+        s = line.lstrip('\r')
+        if _prog_re_salva.match(s):
+            return True
+        if _prog_re_tqdm.search(s):
+            return True
+        return False
+
+    def _write_to_secondary_filtered(self, data: str) -> None:
+        # Normalizza solo CRLF in LF; lasciamo i CR come separatori di update trattandoli come fine linea
+        text = data.replace('\r\n', '\n')
+        # Spezza su CR per catturare aggiornamenti in-place senza introdurre '\n' spurii
+        parts = text.split('\r')
+        for idxp, part in enumerate(parts):
+            self._buf += part
+            # processa linee complete terminate da \n
+            while True:
+                nl = self._buf.find('\n')
+                if nl == -1:
+                    break
+                line = self._buf[:nl]
+                self._buf = self._buf[nl+1:]
+                if self._should_suppress_line(line):
+                    self._suppressed_last = True
+                    continue
+                # scarta righe vuote immediatamente dopo soppressione
+                if self._suppressed_last and line.strip() == '':
+                    # mantieni flag finché non arriva una riga non vuota
+                    continue
+                self._secondary.write(line + '\n')
+                self._suppressed_last = False
+            # Se non è l'ultimo pezzo, abbiamo avuto un CR che segnala aggiornamento riga: tratta il contenuto accumulato come linea completa
+            if idxp < len(parts) - 1:
+                line_cr = self._buf
+                self._buf = ''
+                if self._should_suppress_line(line_cr):
+                    self._suppressed_last = True
+                    continue
+                if self._suppressed_last and (line_cr.strip() == ''):
+                    continue
+                # Scrive la linea derivata da CR senza aggiungere newline extra (usa \n per chiudere la linea corrente)
+                self._secondary.write(line_cr)
+                self._suppressed_last = False
 
     def write(self, data):
         try:
             self._primary.write(data)
         finally:
-            self._secondary.write(data)
+            try:
+                self._write_to_secondary_filtered(str(data))
+            except Exception:
+                self._secondary.write(str(data))
         return len(data)
 
     def flush(self):
+        if self._buf:
+            rem = self._buf
+            self._buf = ''
+            if not self._should_suppress_line(rem):
+                if not (self._suppressed_last and rem.strip() == ''):
+                    self._secondary.write(rem)
+            # se era soppressa o vuota dopo soppressione, non scrivere nulla
         try:
             self._primary.flush()
         finally:
@@ -857,4 +920,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
