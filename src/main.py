@@ -35,6 +35,33 @@ else:
 # Helper slugify locale (evita warning su uso di funzione privata) e precompila regex
 _slugify_re = re.compile(r'[^a-z0-9_\-]')
 
+# Piccolo helper: wrapping angolare in [-pi,pi)
+_def_pi = math.pi
+_def_2pi = 2.0 * math.pi
+
+def _wrap_angle(a: float) -> float:
+    return (float(a) + _def_pi) % _def_2pi - _def_pi
+
+
+def _apply_world_transform(traj: Optional[np.ndarray], base_pose: np.ndarray) -> Optional[np.ndarray]:
+    """Applica la trasformazione di mondo (R0,t0) derivata dalla prima posa reale base_pose = (x0,y0,theta0)
+    a una traiettoria (x,y,theta) locale ricostruita dal log. Ritorna una nuova array, o None se traj è None.
+    """
+    if traj is None:
+        return None
+    arr = np.asarray(traj, dtype=float).copy()
+    if arr.ndim != 2 or arr.shape[1] < 3:
+        return arr
+    x0, y0, th0 = map(float, base_pose[:3])
+    c, s = math.cos(th0), math.sin(th0)
+    r0 = np.array([[c, -s], [s, c]], dtype=float)
+    arr_xy = arr[:, :2] @ r0.T + np.array([x0, y0], dtype=float)
+    arr_th = np.array([_wrap_angle(th0 + t) for t in arr[:, 2]], dtype=float)
+    out = arr.copy()
+    out[:, 0:2] = arr_xy
+    out[:, 2] = arr_th
+    return out
+
 # Regex per sopprimere nel file le righe di progress bar e "Salvataggio immagini"
 # - Righe che iniziano con "Salvataggio immagini" (tqdm o ASCII fallback)
 # - Righe di tqdm con percentuale e barra (es. " 42%|####...") ovunque nella riga
@@ -386,6 +413,7 @@ def main():
     parser.add_argument("--viewer-mode", choices=["grid","carousel"], default="carousel", help="Seleziona viewer: 'grid' (ICP a 5 pannelli) o 'carousel' (standard) - default: carousel")
     parser.add_argument("--quiet", action="store_true", help="Se presente sopprime stampe durante salvataggio immagini (default: stampe attive)")
     parser.add_argument("--no-icp-verbose", dest="icp_verbose", action="store_false", help="Disabilita stampe dettagliate ICP durante l'esecuzione principale")
+    parser.add_argument("--viewer-log-align-world", action="store_true", help="Allinea le traiettorie ricostruite dal LOG (Reali/RAW/ICP) al mondo usando la prima posa reale del caso")
     # parser.add_argument("--viewer-from-log-icp", action="store_true", help="Usa le traiettorie ICP ricostruite ESATTAMENTE dal log corrente nel viewer")
     parser.set_defaults(icp_verbose=True)
     args = parser.parse_args()
@@ -796,9 +824,18 @@ def main():
                 icp = item.get('icp')
                 raw = item.get('raw')
                 # ognuno può mancare: inserisci fallback minimale
-                icp_histories_from_log.append(real if isinstance(real, np.ndarray) and real.size > 0 else np.zeros((1,3), dtype=float))
-                icp_raw_from_log.append(raw if isinstance(raw, np.ndarray) and raw.size > 0 else np.zeros((1,3), dtype=float))
-                icp_filt_from_log.append(icp if isinstance(icp, np.ndarray) and icp.size > 0 else np.zeros((1,3), dtype=float))
+                real_f = real if isinstance(real, np.ndarray) and real.size > 0 else np.zeros((1,3), dtype=float)
+                raw_f = raw if isinstance(raw, np.ndarray) and raw.size > 0 else np.zeros((1,3), dtype=float)
+                icp_f = icp if isinstance(icp, np.ndarray) and icp.size > 0 else np.zeros((1,3), dtype=float)
+                # Allineamento opzionale al mondo: usa la prima posa reale del caso simulato
+                if getattr(args, 'viewer_log_align_world', False) and idx < len(histories) and len(histories[idx]) > 0:
+                    base = np.asarray(histories[idx][0], dtype=float)
+                    real_f = _apply_world_transform(real_f, base)
+                    raw_f = _apply_world_transform(raw_f, base)
+                    icp_f = _apply_world_transform(icp_f, base)
+                icp_histories_from_log.append(real_f)
+                icp_raw_from_log.append(raw_f)
+                icp_filt_from_log.append(icp_f)
         # ===== Fine ricostruzione =====
 
         # Mostra viewer dopo tutti i salvataggi e (opzionale) ICP
@@ -808,6 +845,7 @@ def main():
             # e passa raw/filtrato al viewer per i due pannelli ICP
             if icp_histories_from_log is not None:
                 viewer_histories = icp_histories_from_log
+                # Mantieni indicazione "(ICP da log)" nel titolo
                 viewer_titles = [f"{t} (ICP da log)" for t in titles]
                 viewer_cmds = None
                 viewer_raw = icp_raw_from_log
@@ -1034,7 +1072,7 @@ def main():
             if _tqdm is not None:
                 with _tqdm(total=total_icp_imgs, desc="Grafici ICP", unit="img", ncols=90) as pbar_icp:
                     for plot_title, plot_res in zip(titles, icp_all_cases):
-                        rep = _select_icp_representative(plot_res)
+                        rep = _select_icp_rerepresentative(plot_res)
                         if rep is None:
                             pbar_icp.update(per_case_imgs)
                             continue
