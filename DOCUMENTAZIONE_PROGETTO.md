@@ -256,9 +256,11 @@ Questi sono i metodi core dell'algoritmo ICP, indipendenti dall'inizializzazione
 
 4. **`icp(source, target, init_R, init_t, max_iterations, tolerance, max_correspondence_distance)`**:
    - **Funzione principale ICP** (algoritmo generico)
-   - Parametri `init_R` e `init_t` determinano il comportamento:
+   - **INPUT FONDAMENTALE**: `source` e `target` sono **SEMPRE scansioni LiDAR** (nuvole di punti)
+   - Parametri `init_R` e `init_t` determinano solo il punto di partenza:
      - Se `None` → **ICP RAW** (senza odometria, parte da identità)
-     - Se forniti → **ICP FILTRATO** (con odometria, parte da stima)
+     - Se forniti → **ICP FILTRATO** (con odometria, parte da stima odometrica)
+   - **IMPORTANTE**: In entrambi i casi, l'algoritmo usa **SOLO i dati LiDAR** per iterare e trovare la soluzione
    - Algoritmo iterativo:
      1. Applica trasformazione iniziale
      2. Loop fino a convergenza:
@@ -272,14 +274,17 @@ Questi sono i metodi core dell'algoritmo ICP, indipendenti dall'inizializzazione
 
 ---
 
-#### B) METODI PER ODOMETRIA (solo per ICP con inizializzazione)
+#### B) METODI PER ODOMETRIA (solo per inizializzazione ICP)
 
 Questi metodi sono usati **esclusivamente** per calcolare la stima iniziale da odometria:
 
+**IMPORTANTE**: L'odometria fornisce solo il **punto di partenza** per l'ICP. L'algoritmo ICP usa **sempre** le scansioni LiDAR per trovare la trasformazione ottimale.
+
 1. **`compute_relative_transform_from_odometry(prev_pose, curr_pose)`**:
-   - **Scopo**: Calcola trasformazione relativa tra due pose consecutive usando SOLO l'odometria
-   - Input: `prev_pose = [x, y, theta]` al tempo k-1, `curr_pose` al tempo k
-   - Output: `R` (matrice 2x2 di rotazione), `t` (vettore 2D di traslazione)
+   - **Scopo**: Calcola trasformazione relativa tra due pose consecutive usando SOLO l'odometria (NON le scansioni)
+   - **Quando viene usato**: Solo per inizializzare R e t prima di passare i dati all'ICP
+   - Input: `prev_pose = [x, y, theta]` al tempo k-1, `curr_pose` al tempo k (solo pose, no LiDAR)
+   - Output: `R` (matrice 2x2 di rotazione), `t` (vettore 2D di traslazione) come stima iniziale
    - **Formula**:
      ```
      # Differenza angolare
@@ -366,15 +371,25 @@ Questi metodi sono usati **esclusivamente** per calcolare la stima iniziale da o
 
 #### DIFFERENZE CHIAVE tra ICP Filtrato e ICP RAW
 
+**IMPORTANTE**: Entrambe le varianti usano **SEMPRE** le scansioni LiDAR come dati primari!
+
 | Aspetto | ICP FILTRATO (con odometria) | ICP RAW (senza odometria) |
 |---------|------------------------------|---------------------------|
+| **Scansioni LiDAR** | ✅ USA (source, target) | ✅ USA (source, target) |
+| **Odometria** | ✅ Solo per inizializzazione | ❌ Non usata |
 | **Inizializzazione** | R e t da odometria | R = I (identità), t = 0 |
 | **Prima iterazione** | Parte vicino alla soluzione | Parte da zero |
+| **Iterazioni successive** | Solo dati LiDAR | Solo dati LiDAR |
 | **Convergenza** | Più veloce (5-15 iterazioni) | Più lenta (15-30 iterazioni) |
 | **Robustezza** | Alta (meno minimi locali) | Media (rischio minimi locali) |
 | **Precisione finale** | Alta (se odometria buona) | Variabile (dipende da geometria) |
 | **Quando fallisce** | Se odometria molto sbagliata | Se scena simmetrica/povera |
 | **Uso tipico** | Localizzazione incrementale | Localizzazione globale, relocalization |
+
+**In sintesi**:
+- L'odometria fornisce solo una **"prima ipotesi"** migliore
+- Entrambi gli algoritmi **raffinano sempre** usando le scansioni LiDAR
+- Il risultato finale è **sempre basato sui dati LiDAR**, non sull'odometria
 
 ---
 
