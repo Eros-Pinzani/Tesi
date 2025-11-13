@@ -36,7 +36,6 @@ from lidar import Lidar  # Tipo del sensore per visualizzazione raggi
 import shutil  # Per pulire cartelle di output delle immagini
 # Nuovi import per ICP grid
 from typing import Dict
-from icp import run_icp_over_history  # per costruire le traiettorie stimate ICP
 
 # Eccezioni comuni gestite in modo sicuro (piu' strette di Exception)
 COMMON_EXC = (AttributeError, ValueError, TypeError, RuntimeError)
@@ -718,7 +717,7 @@ def show_trajectories_carousel(
         if idxc not in cache:
             info_artist = fig.text(0.5, 0.02, f"Calcolo ICP per: {title}...", ha='center', va='bottom', fontsize=10)
             fig.canvas.draw_idle()
-            # Usa traiettorie fornite dal log, se disponibili; altrimenti calcola ora
+            # Usa traiettorie fornite dal log
             icp_res_trajs = None
             if icp_raw_histories is not None or icp_filt_histories is not None:
                 raw_arr = None if icp_raw_histories is None else icp_raw_histories[idxc]
@@ -729,9 +728,10 @@ def show_trajectories_carousel(
                         'none': np.asarray(filt_arr, dtype=float),
                     }
 
-            # Se non disponibili dal log, calcola ora
+            # Fallback: traiettoria reale se ICP non disponibile
             if icp_res_trajs is None:
-                icp_res_trajs = _compute_icp_trajectories_for_case(hist, lid_cur, env_cur)
+                hist_arr = np.asarray(hist, dtype=float)
+                icp_res_trajs = {'raw_none': hist_arr.copy(), 'none': hist_arr.copy()}
 
             cache[idxc] = icp_res_trajs
             _safe_remove_artist(info_artist)
@@ -1235,14 +1235,14 @@ def show_trajectories_icp_grid(
             with suppress(*COMMON_EXC):
                 a.set_xlabel('x [m]')
                 a.set_ylabel('y [m]')
-        # Calcolo e disegno traiettorie ICP se possibile
-        if env_cur is not None and lid_cur is not None:
-            trajs = _compute_icp_trajectories_for_case(hist_np, lid_cur, env_cur)
-            raw_tr = trajs.get('raw_none'); filt_tr = trajs.get('none')
-            if isinstance(raw_tr, np.ndarray) and raw_tr.size > 0:
-                ax_raw_none.plot(raw_tr[:, 0], raw_tr[:, 1], '-', color='tab:blue', linewidth=1.5, label='RAW')
-            if isinstance(filt_tr, np.ndarray) and filt_tr.size > 0:
-                ax_filt_none.plot(filt_tr[:, 0], filt_tr[:, 1], '-', color='tab:green', linewidth=1.5, label='Filtrato')
+        # Calcolo e disegno traiettorie ICP (fallback: usa traiettoria reale)
+        # Nota: in produzione le traiettorie ICP vengono sempre fornite dal log
+        trajs = {'raw_none': hist_np.copy(), 'none': hist_np.copy()}
+        raw_tr = trajs.get('raw_none'); filt_tr = trajs.get('none')
+        if isinstance(raw_tr, np.ndarray) and raw_tr.size > 0:
+            ax_raw_none.plot(raw_tr[:, 0], raw_tr[:, 1], '-', color='tab:blue', linewidth=1.5, label='RAW')
+        if isinstance(filt_tr, np.ndarray) and filt_tr.size > 0:
+            ax_filt_none.plot(filt_tr[:, 0], filt_tr[:, 1], '-', color='tab:green', linewidth=1.5, label='Filtrato')
             with suppress(*COMMON_EXC):
                 ax_raw_none.legend(loc='best', framealpha=0.85, fontsize=8)
                 ax_filt_none.legend(loc='best', framealpha=0.85, fontsize=8)

@@ -5,11 +5,9 @@ import visualizer
 from environment_presets import setup_environments_per_trajectory
 from lidar import Lidar  # sensore LiDAR
 import argparse
-from icp import relative_local_transform  # Ground truth relativo per confronto pose
-from icp_simple import run_icp_pair  # Nuovo ICP semplice e robusto
+from icp import run_icp_pair, compute_relative_transform_from_odometry
 import time  # per ETA nella barra di progresso
 from tqdm import tqdm as _tqdm  # progress bar esterna con ETA
-# import sys  # per rilevare TTY e usare bold ANSI (non più necessario, grassetto forzato)
 from icp_plots import (
     save_concept_correspondences,
     save_alignment_overlays,
@@ -832,7 +830,7 @@ def main():
                         k = int(res['k'])
                         if 1 <= k < len(case_hist):
                             prev_pose = case_hist[k-1]; curr_pose = case_hist[k]
-                            r_gt, t_gt = relative_local_transform(prev_pose, curr_pose)
+                            r_gt, t_gt = compute_relative_transform_from_odometry(prev_pose, curr_pose)
                             def _ang_deg(rm):
                                 return 0.0 if rm is None else float(np.degrees(np.arctan2(rm[1, 0], rm[0, 0])))
                             gt_ax = float(t_gt[0]); gt_ay = float(t_gt[1]); gt_ad = _ang_deg(r_gt)
