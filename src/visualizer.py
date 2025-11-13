@@ -984,6 +984,16 @@ def save_lidar_scans_images(
                 ax.plot([x0, float(px)], [y0, float(py)], color='tab:red', alpha=0.35, linewidth=0.8)
             ax.scatter(hits[:, 0], hits[:, 1], s=6, c='tab:red', alpha=0.65)
 
+        # Aggiungi rappresentazione del robot nella sua posa corrente
+        # Calcola scala del robot basata sull'estensione dell'ambiente
+        span = max(x_max - x_min, y_max - y_min, 1.0)
+        robot_radius = max(0.02, 0.015 * span)  # Scala proporzionale all'ambiente
+        dir_len = 2.5 * robot_radius  # Lunghezza freccia
+
+        # Disegna il robot nella posa corrente (blu per distinguerlo dalla traiettoria)
+        draw_robot(ax, pose, robot_radius=robot_radius, dir_len=dir_len,
+                  color='tab:blue', arrow_color='orange', center_color='orange')
+
         out_path = out_dir / f"{_slugify(title)}_t{float(k) * float(dt):.2f}s_points_{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"
         fig.savefig(out_path, dpi=120, bbox_inches='tight')
         if not quiet and progress_cb is None:
