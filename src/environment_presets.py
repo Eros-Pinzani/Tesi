@@ -237,14 +237,27 @@ def setup_environments_per_trajectory(histories: List[np.ndarray], titles: List[
     for idx, (hist, _title) in enumerate(zip(histories, titles)):
         env_case = Environment()
         b_left, b_bottom, b_right, b_top = _compute_bounds_for_hist(hist)
+
+        # Per la traiettoria a 8 (idx=4), aumenta il padding dei bounds
+        if idx == 4:
+            # Ricalcola bounds con padding maggiore (25% invece di 15%)
+            hist_x_vals = hist[:, 0]
+            hist_y_vals = hist[:, 1]
+            x_min, x_max = float(np.min(hist_x_vals)), float(np.max(hist_x_vals))
+            y_min, y_max = float(np.min(hist_y_vals)), float(np.max(hist_y_vals))
+            span_x = max(1e-9, x_max - x_min)
+            span_y = max(1e-9, y_max - y_min)
+            pad = 0.30 * max(span_x, span_y, 1.0)  # 30% di padding invece di 15%
+            b_left, b_bottom, b_right, b_top = x_min - pad, y_min - pad, x_max + pad, y_max + pad
+
         env_case.set_bounds(b_left, b_bottom, b_right, b_top)
 
         path_line = LineString(hist[:, :2].tolist())
         clearance = _safety_clearance(b_left, b_bottom, b_right, b_top)
 
-        # Per la traiettoria a 8 (idx=4), riduci la clearance per permettere più ostacoli
+        # Per la traiettoria a 8 (idx=4), aumenta la clearance per evitare collisioni
         if idx == 4:
-            clearance *= 0.6  # Riduci del 40% per traiettoria a 8
+            clearance *= 1.2  # Aumenta del 20% per garantire sicurezza totale
 
         path_buffer = path_line.buffer(clearance, cap_style='flat', join_style='bevel')
 
@@ -437,12 +450,47 @@ def setup_environments_per_trajectory(histories: List[np.ndarray], titles: List[
             wall_b_sym = _clamp_pt(c3_sym + 0.5 * wall_len * n_hat)
             _add_wall_safe(wall_a_sym, wall_b_sym, t_wall)
         elif idx == 1:
-            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.18, 0.70, 0.18, 0.12, -20.0, 'L')
-            _place_circle_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.46, 0.26, 0.05)
-            _place_wall_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.70, 0.74, 0.82, 0.80, 0.03)
-            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.82, 0.24, 0.14, 0.10, 12.0, 'triangle')
-            _place_wall_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.30, 0.18, 0.38, 0.32, 0.025)
-            _place_circle_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.52, 0.90, 0.035)
+            # Rettilinea v variabile: configurazione OTTIMIZZATA per ICP
+            # SCANSIONI: ogni 0.1s (invece di 0.05s) per più feature
+            # OSTACOLI: grandi, vicini, asimmetrici, forme distintive
+
+            # === STRATEGIA: MASSIMA VISIBILITÀ + ASIMMETRIA ===
+            # - Ostacoli GRANDI (0.15-0.20) invece di piccoli (0.10-0.12)
+            # - Più VICINI alla traiettoria per essere sempre visibili
+            # - FORME DIVERSE per ogni sezione
+            # - ASIMMETRIA totale (nessuna coppia speculare)
+
+            # ZONA BASSA (Y=0.15-0.25) - 3 grandi ostacoli
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.25, 0.18, 0.18, 0.15, -30.0, 'L')  # GRANDE L sinistra
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.70, 0.22, 0.16, 0.14, 25.0, 'triangle')  # GRANDE triangolo destra
+            _place_circle_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.15, 0.20, 0.065)  # GRANDE cerchio sinistra
+
+            # ZONA MEDIO-BASSA (Y=0.35-0.45) - 3 grandi ostacoli
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.75, 0.38, 0.17, 0.14, 35.0, 'triangle')  # GRANDE triangolo destra
+            _place_wall_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.20, 0.40, 0.26, 0.44, 0.05)  # Muro SPESSO sinistra
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.85, 0.42, 0.16, 0.13, -25.0, 'L')  # L destra
+
+            # ZONA CENTRALE (Y=0.50-0.60) - 4 grandi ostacoli DISTINTIVI
+            _place_circle_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.30, 0.52, 0.070)  # GRANDE cerchio sinistra
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.72, 0.55, 0.18, 0.15, -20.0, 'L')  # GRANDE L destra
+            _place_wall_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.15, 0.56, 0.19, 0.60, 0.05)  # Muro sinistra
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.85, 0.58, 0.15, 0.13, 30.0, 'triangle')  # Triangolo destra
+
+            # ZONA MEDIO-ALTA (Y=0.65-0.75) - 3 grandi ostacoli
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.68, 0.68, 0.17, 0.14, 28.0, 'triangle')  # GRANDE triangolo destra
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.25, 0.72, 0.18, 0.15, -25.0, 'L')  # GRANDE L sinistra
+            _place_wall_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.82, 0.70, 0.88, 0.74, 0.05)  # Muro destra
+
+            # ZONA ALTA (Y=0.80-0.90) - 3 grandi ostacoli
+            _place_circle_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.70, 0.82, 0.065)  # GRANDE cerchio destra
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.28, 0.85, 0.17, 0.15, -30.0, 'L')  # GRANDE L sinistra
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.85, 0.88, 0.15, 0.13, 22.0, 'triangle')  # Triangolo destra
+
+            # TOTALE: 19 ostacoli GRANDI e ASIMMETRICI
+            # 3 cerchi GRANDI (marker distintivi)
+            # 5 forme L GRANDI (angoli distintivi)
+            # 7 triangoli GRANDI (ben distribuiti)
+            # 4 muri SPESSI (riferimenti lineari)
         elif idx == 2:
             _place_circle_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.14, 0.54, 0.06)
             _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.50, 0.14, 0.18, 0.12, 30.0, 'triangle')
@@ -467,18 +515,90 @@ def setup_environments_per_trajectory(histories: List[np.ndarray], titles: List[
             _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.65, 0.35, 0.12, 0.14, -20.0, 'triangle')
             _place_wall_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.48, 0.08, 0.58, 0.12, 0.03)
         elif idx == 4:
-            # Ridotto numero di ostacoli per idx=4 e posizioni più sicure
-            # RIMOSSO: _place_polygon_frac(..., 0.18, 0.44, ...) - troppo a sinistra
-            # RIMOSSO: _place_wall_frac(..., 0.18, 0.18, 0.28, 0.30, ...) - interseca il lobo inferiore
-            _place_wall_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.46, 0.22, 0.64, 0.22, 0.05)
-            _place_circle_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.82, 0.56, 0.05)
-            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.70, 0.88, 0.14, 0.12, 5.0, 'triangle')
-            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.88, 0.18, 0.12, 0.10, -18.0, 'triangle')
-            _place_circle_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.52, 0.92, 0.035)
+            # Traiettoria a 8: configurazione PULITA con ostacoli essenziali ben distribuiti
+
+            # === OSTACOLI PRINCIPALI: TRIANGOLI NEI CENTRI DEI DUE CERCHI ===
+            # Dalla simulazione della traiettoria:
+            #   Centro primo cerchio (SUPERIORE):  X = 0.011, Y = 1.794 → fraz (0.50, 0.66)
+            #   Centro secondo cerchio (INFERIORE): X = -0.009, Y = -2.071 → fraz (0.50, 0.34)
+
+            # Triangolo spigoloso nel centro del cerchio SUPERIORE
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer,
+                              0.50, 0.66, 0.15, 0.15, 30.0, 'triangle')
+
+            # Triangolo spigoloso nel centro del cerchio INFERIORE
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer,
+                              0.50, 0.34, 0.15, 0.15, -30.0, 'triangle')
+
+            # === OSTACOLI SECONDARI: pochi e ben distribuiti per riferimenti LIDAR ===
+            # Muri laterali (solo 2, ben distanziati)
+            _place_wall_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer,
+                           0.88, 0.40, 0.88, 0.60, 0.04)  # Destra
+            _place_wall_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer,
+                           0.12, 0.40, 0.12, 0.60, 0.04)  # Sinistra
+
+            # Triangoli agli angoli (solo 4, uno per quadrante)
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer,
+                              0.85, 0.88, 0.10, 0.09, 15.0, 'triangle')   # Alto-destra
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer,
+                              0.15, 0.88, 0.10, 0.09, -15.0, 'triangle')  # Alto-sinistra
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer,
+                              0.85, 0.12, 0.10, 0.09, -15.0, 'triangle')  # Basso-destra
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer,
+                              0.15, 0.12, 0.10, 0.09, 15.0, 'triangle')   # Basso-sinistra
         else:
-            _place_circle_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.20, 0.24, 0.05)
-            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.50, 0.72, 0.14, 0.16, -12.0, 'triangle')
-            _place_wall_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.88, 0.80, 0.96, 0.88, 0.04)
+            # Random walk: CONFIGURAZIONE OTTIMIZZATA - QUALITÀ > QUANTITÀ
+            # PROBLEMA PRECEDENTE: Troppi ostacoli (28) troppo grandi confondono ICP
+            # SOLUZIONE: POCHI ostacoli BEN POSIZIONATI con dimensioni MEDIE
+
+            # === STRATEGIA: MENO È MEGLIO ===
+            # - Solo 12 ostacoli STRATEGICI (invece di 28)
+            # - Dimensioni MEDIE (0.12-0.14) per bilanciare visibilità e precisione
+            # - ALTA DISTANZA tra ostacoli per evitare ambiguità
+            # - Mix di forme per feature distintive in ogni direzione
+
+            # QUADRANTE BASSO-SINISTRA (2 ostacoli)
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.20, 0.22, 0.14, 0.13, -30.0, 'L')
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.32, 0.32, 0.13, 0.12, 25.0, 'triangle')
+
+            # QUADRANTE BASSO-DESTRA (2 ostacoli)
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.75, 0.25, 0.13, 0.12, -25.0, 'triangle')
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.82, 0.18, 0.14, 0.12, 35.0, 'L')
+
+            # ZONA CENTRALE (4 ostacoli) - ben distanziati
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.25, 0.50, 0.14, 0.13, -22.0, 'triangle')
+            _place_wall_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.48, 0.48, 0.52, 0.52, 0.04)  # Muro corto centrale
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.65, 0.55, 0.13, 0.12, 30.0, 'L')
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.80, 0.48, 0.12, 0.11, -28.0, 'triangle')
+
+            # QUADRANTE ALTO-SINISTRA (2 ostacoli)
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.22, 0.75, 0.14, 0.13, 28.0, 'L')
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.35, 0.82, 0.12, 0.11, -20.0, 'triangle')
+
+            # QUADRANTE ALTO-DESTRA (2 ostacoli)
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.70, 0.78, 0.13, 0.12, -26.0, 'triangle')
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.82, 0.85, 0.14, 0.12, 32.0, 'L')
+
+            # === OSTACOLI GRANDI STRATEGICI PER ICP RAW (4 ostacoli) ===
+            # Posizionati in zone chiave per aiutare convergenza durante grandi rotazioni
+            # Dimensioni GRANDI (0.16-0.18) per essere sempre visibili
+
+            # BASSO CENTRO - OSTACOLO CHIAVE per ICP RAW (NUOVO!)
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.50, 0.18, 0.18, 0.16, 45.0, 'triangle')  # TRIANGOLO ENORME al centro basso
+
+            # ESTREMI LATERALI
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.12, 0.50, 0.17, 0.16, -35.0, 'L')  # Sinistra lontana - GRANDE
+            _place_polygon_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.88, 0.65, 0.16, 0.15, 30.0, 'triangle')  # Destra lontana - GRANDE
+
+            # ALTO CENTRO
+            _place_wall_frac(env_case, b_left, b_bottom, b_right, b_top, path_line, path_buffer, 0.50, 0.85, 0.50, 0.92, 0.05)  # Muro verticale alto - RIFERIMENTO FORTE
+
+            # TOTALE: 16 ostacoli (12 MEDI + 4 GRANDI STRATEGICI)
+            # 8 Triangoli (6 medi + 2 grandi) - BASSO CENTRO CHIAVE!
+            # 6 Forme L (5 medie + 1 grande)
+            # 2 Muri (1 corto centrale + 1 verticale alto)
+            # DISTRIBUZIONE: Croce di riferimenti forti (basso-centro, alto-centro, sinistra, destra)
+
 
         # Aggiungi ostacoli fissi garantiti (non dipendono dalla logica di piazzamento automatico)
         # Questi ostacoli vengono posizionati in coordinate frazionali (0-1) rispetto ai bounds
@@ -508,26 +628,61 @@ def setup_environments_per_trajectory(histories: List[np.ndarray], titles: List[
         # Per la traiettoria a 8 (idx=4), evita ostacoli vicini al centro dove si incrocia
         is_eight = (idx == 4)
 
-        # Aggiungi ostacoli in posizioni diverse per ogni caso
-        # Ostacolo basso-sinistra (0.25, 0.25) rimosso per idx=4 perché interseca la traiettoria
+        # Aggiungi ostacoli essenziali con gestione sovrapposizioni per ogni traiettoria
         if not is_eight:
-            add_obstacle_frac(0.25, 0.25, 0.035, True)   # Basso-sinistra
-        add_obstacle_frac(0.75, 0.25, 0.04, False)   # Basso-destra
-        add_obstacle_frac(0.25, 0.75, 0.045, True)   # Alto-sinistra
-        add_obstacle_frac(0.75, 0.75, 0.035, True)   # Alto-destra
+            # === RETTILINEA V COSTANTE (idx=0) ===
+            # RIMUOVI: cerchio alto-destra (0.85, 0.85) sopra rettangolo
+            # RIMUOVI: quadrato basso-destra (0.75, 0.25) sopra rettangolo
+            if idx == 0:
+                add_obstacle_frac(0.25, 0.25, 0.035, True)   # Basso-sinistra - OK
+                add_obstacle_frac(0.25, 0.75, 0.045, True)   # Alto-sinistra - OK
+                # RIMOSSO: add_obstacle_frac(0.75, 0.75, 0.035, True) - sovrapposto
+                # RIMOSSO: add_obstacle_frac(0.75, 0.25, 0.04, False) - sovrapposto
+                add_obstacle_frac(0.5, 0.15, 0.03, False)    # Centro-basso - OK
+                add_obstacle_frac(0.5, 0.85, 0.04, False)    # Centro-alto - OK
+                add_obstacle_frac(0.35, 0.35, 0.025, True)   # Intermedio 1 - OK
+                add_obstacle_frac(0.65, 0.65, 0.03, True)    # Intermedio 2 - OK
+                add_obstacle_frac(0.15, 0.5, 0.04, True)     # Sinistra-centro - OK
+                # RIMOSSO: add_obstacle_frac(0.85, 0.5, 0.035, True) per sicurezza
+                add_obstacle_frac(0.15, 0.15, 0.03, True)    # Angolo basso-sinistra - OK
+                # RIMOSSO: add_obstacle_frac(0.85, 0.85, 0.035, True) - cerchio sopra rettangolo
 
-        # Ostacoli centrali: solo se NON è la traiettoria a 8
-        if not is_eight:
-            add_obstacle_frac(0.5, 0.15, 0.03, False)    # Centro-basso
-            add_obstacle_frac(0.5, 0.85, 0.04, False)    # Centro-alto
-            add_obstacle_frac(0.35, 0.35, 0.025, True)   # Intermedio 1
-            add_obstacle_frac(0.65, 0.65, 0.03, True)    # Intermedio 2
+            # === RETTILINEA V VARIABILE (idx=1) ===
+            # RIMUOVI TUTTI gli ostacoli aggiuntivi per test
+            elif idx == 1:
+                pass  # NESSUN ostacolo aggiuntivo
 
-        # Ostacoli laterali: sempre sicuri
-        add_obstacle_frac(0.15, 0.5, 0.04, True)     # Sinistra-centro
-        add_obstacle_frac(0.85, 0.5, 0.035, True)    # Destra-centro
-        add_obstacle_frac(0.15, 0.15, 0.03, True)    # Angolo basso-sinistra extra
-        add_obstacle_frac(0.85, 0.85, 0.035, True)   # Angolo alto-destra extra
+            # === CIRCOLARE V COSTANTE (idx=2) ===
+            # RIMUOVI TUTTI gli ostacoli aggiuntivi per test
+            elif idx == 2:
+                pass  # NESSUN ostacolo aggiuntivo
+
+            # === CIRCOLARE V VARIABILE (idx=3) ===
+            # Nessuna sovrapposizione
+            elif idx == 3:
+                add_obstacle_frac(0.25, 0.25, 0.035, True)   # Basso-sinistra - OK
+                add_obstacle_frac(0.75, 0.25, 0.04, False)   # Basso-destra - OK
+                add_obstacle_frac(0.25, 0.75, 0.045, True)   # Alto-sinistra - OK
+                add_obstacle_frac(0.75, 0.75, 0.035, True)   # Alto-destra - OK
+                add_obstacle_frac(0.5, 0.15, 0.03, False)    # Centro-basso - OK
+                add_obstacle_frac(0.5, 0.85, 0.04, False)    # Centro-alto - OK
+                add_obstacle_frac(0.35, 0.35, 0.025, True)   # Intermedio 1 - OK
+                add_obstacle_frac(0.65, 0.65, 0.03, True)    # Intermedio 2 - OK
+                add_obstacle_frac(0.15, 0.5, 0.04, True)     # Sinistra-centro - OK
+                add_obstacle_frac(0.85, 0.5, 0.035, True)    # Destra-centro - OK
+                add_obstacle_frac(0.15, 0.15, 0.03, True)    # Angolo basso-sinistra - OK
+                add_obstacle_frac(0.85, 0.85, 0.035, True)   # Angolo alto-destra - OK
+
+            # === RANDOM WALK (idx=5) ===
+            # RIMUOVI TUTTI gli ostacoli aggiuntivi per evitare sovrapposizioni
+            # I 28 ostacoli primari sono già sufficienti per vincoli forti
+            elif idx == 5:
+                pass  # NESSUN ostacolo aggiuntivo - evita sovrapposizioni
+
+        # Per la traiettoria a 8: NON aggiungere altri ostacoli oltre a quelli già definiti
+        if is_eight:
+            pass  # Ostacoli già definiti nella sezione specifica idx==4
+
 
         envs.append(env_case)
 

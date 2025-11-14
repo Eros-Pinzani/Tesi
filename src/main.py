@@ -560,14 +560,16 @@ def main():
         titles.append("Circolare (v variabile)")
 
         # 5) Traiettoria a 8 — ciclo completo con raggio maggiore per separare i lobi
+        # POSIZIONAMENTO SPECIALE: centrata per evitare di uscire dai bounds
         v = v_ref
-        r_eight = 2.0  # Raggio 2.0m (invece di 1.95m) per lobi ben separati e visibili
+        r_eight = 1.8  # Raggio ridotto a 1.8m per stare nei bounds
         period_eight = (4.0 * math.pi * r_eight) / max(v, 1e-9)
         n_steps_eight = max(2, int(round(period_eight / dt)))
         if n_steps_eight % 2 == 1:
             n_steps_eight += 1
         t_eight = (n_steps_eight - 1e-9) * dt
         vs, omegas = tg.eight(v=v, radius=r_eight, T=t_eight, dt=dt)
+        # Reset con posizione iniziale standard (verticale per default)
         reset_robot_default(sim)
         histories.append(sim.run_from_sequence(vs, omegas, dt))
         commands_list.append(sim.commands)
@@ -679,11 +681,25 @@ def main():
                     _maxcorr = 0.35  # Più alta per gestire transizione tra lobi
                 else:  # random walk
                     _maxcorr = 0.30
+
+                # Imposta intervallo di scansione per ICP in base al tipo di traiettoria
+                # Per traiettorie complesse (a 8, rettilinea v variabile, random walk), usa 10 Hz (0.1 secondi)
+                if idx == 4:  # traiettoria a 8
+                    icp_scan_interval = 0.1  # 10 Hz (ogni 0.1 secondi)
+                elif idx == 1:  # rettilinea v variabile - AUMENTATE LE SCANSIONI
+                    icp_scan_interval = 0.1  # 10 Hz (ogni 0.1 secondi) invece di 0.05
+                elif idx == 5:  # random walk - AUMENTATE LE SCANSIONI
+                    icp_scan_interval = 0.1  # 10 Hz (ogni 0.1 secondi) per più feature
+                else:
+                    icp_scan_interval = dt  # usa dt (0.05s) per processare ogni frame consecutivo
+
+                # Calcola step_idx per questo caso specifico
+                _step = max(1, int(round(icp_scan_interval / max(1e-9, float(dt)))))
+
                 # Progress bar per-caso
                 case_pbar = None
                 if _tqdm is not None:
-                    _step = 1
-                    total_pairs = max(0, len(range(1, len(case_hist), max(1, _step))))
+                    total_pairs = max(0, len(range(_step, len(case_hist), _step)))
                     case_pbar = _tqdm(
                         total=total_pairs,
                         desc=f"ICP – {case_title}",
@@ -693,10 +709,11 @@ def main():
                         bar_format="{percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} {unit} [{elapsed}<{remaining}]"
                     )
 
-                # Esegui ICP su tutte le coppie consecutive
+                # Esegui ICP su coppie con intervallo specifico
                 res_list = []
-                for k in range(1, len(case_hist)):
-                    prev_pose = case_hist[k-1]
+                for k in range(_step, len(case_hist), _step):
+                    prev_idx = k - _step
+                    prev_pose = case_hist[prev_idx]
                     curr_pose = case_hist[k]
 
                     # Genera scansioni LiDAR in frame locale
@@ -707,6 +724,7 @@ def main():
                         res_list.append({
                             'ok': False,
                             'k': k,
+                            'prev_k': prev_idx,
                             'n_src': len(curr_local),
                             'n_tgt': len(prev_local)
                         })
@@ -717,12 +735,13 @@ def main():
                     # Esegui ICP con il nuovo algoritmo semplice
                     result = run_icp_pair(
                         prev_pose, curr_pose,
-                        curr_local, prev_local,  # source=k, target=k-1
+                        curr_local, prev_local,  # source=k, target=k-_step
                         max_iterations=50,
                         tolerance=1e-6,
                         max_correspondence_distance=_maxcorr
                     )
                     result['k'] = k
+                    result['prev_k'] = prev_idx
                     res_list.append(result)
 
                     if case_pbar is not None:
@@ -828,8 +847,9 @@ def main():
                             print(indent + f"alpha[ICP]={rn['alpha_deg']:.4f} deg")
                         # Pose
                         k = int(res['k'])
-                        if 1 <= k < len(case_hist):
-                            prev_pose = case_hist[k-1]; curr_pose = case_hist[k]
+                        prev_k = res.get('prev_k', k-1)  # usa prev_k se disponibile, altrimenti k-1 per retrocompatibilità
+                        if prev_k >= 0 and prev_k < len(case_hist) and k < len(case_hist):
+                            prev_pose = case_hist[prev_k]; curr_pose = case_hist[k]
                             r_gt, t_gt = compute_relative_transform_from_odometry(prev_pose, curr_pose)
                             def _ang_deg(rm):
                                 return 0.0 if rm is None else float(np.degrees(np.arctan2(rm[1, 0], rm[0, 0])))
@@ -890,8 +910,7 @@ def main():
             # e passa raw/filtrato al viewer per i due pannelli ICP
             if icp_histories_from_log is not None:
                 viewer_histories = icp_histories_from_log
-                # Mantieni indicazione "(ICP da log)" nel titolo
-                viewer_titles = [f"{t} (ICP da log)" for t in titles]
+                viewer_titles = titles
                 viewer_cmds = None
                 viewer_raw = icp_raw_from_log
                 viewer_filt = icp_filt_from_log

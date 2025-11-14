@@ -254,22 +254,22 @@ def run_icp_pair(prev_pose: np.ndarray,
     # Calcola trasformazione da odometria per inizializzazione
     R_odom, t_odom = compute_relative_transform_from_odometry(prev_pose, curr_pose)
 
-    # ICP con inizializzazione da odometria
-    result_init = icp(
+    # ICP FILTRATO: con inizializzazione da odometria (più robusto)
+    result_filtered = icp(
         src_local, tgt_local,
-        init_R=R_odom, init_t=t_odom,
+        init_R=R_odom, init_t=t_odom,  # Inizializzazione da odometria
         max_iterations=max_iterations,
         tolerance=tolerance,
         max_correspondence_distance=max_correspondence_distance
     )
 
-    # ICP senza inizializzazione (per confronto)
+    # ICP RAW: SOLO inizializzazione diversa (identità), tutti gli altri parametri IDENTICI
     result_raw = icp(
         src_local, tgt_local,
-        init_R=None, init_t=None,
-        max_iterations=max_iterations,
-        tolerance=tolerance,
-        max_correspondence_distance=max_correspondence_distance
+        init_R=np.eye(2), init_t=np.zeros(2),  # Inizializzazione a identità
+        max_iterations=max_iterations,  # Stesso valore
+        tolerance=tolerance,  # Stesso valore
+        max_correspondence_distance=max_correspondence_distance  # Stesso valore
     )
 
     # Formato compatibile
@@ -282,19 +282,19 @@ def run_icp_pair(prev_pose: np.ndarray,
         'gt_t': t_odom,
         'src_local': src_local,
         'tgt_local': tgt_local,
-        'none': {  # Con inizializzazione
-            'R': result_init['R'],
-            't': result_init['t'],
-            'alpha_rad': np.radians(result_init['angle_deg']),
-            'alpha_deg': result_init['angle_deg'],
-            'rmse': result_init['rmse'],
-            'iterations': result_init['iterations'],
-            'n_corr_last': result_init['n_correspondences'],
-            'errors': result_init['errors'],
-            'src_transformed': (result_init['R'] @ src_local.T).T + result_init['t'],
-            'converged': result_init['converged']
+        'none': {  # ICP FILTRATO: con inizializzazione da odometria
+            'R': result_filtered['R'],
+            't': result_filtered['t'],
+            'alpha_rad': np.radians(result_filtered['angle_deg']),
+            'alpha_deg': result_filtered['angle_deg'],
+            'rmse': result_filtered['rmse'],
+            'iterations': result_filtered['iterations'],
+            'n_corr_last': result_filtered['n_correspondences'],
+            'errors': result_filtered['errors'],
+            'src_transformed': (result_filtered['R'] @ src_local.T).T + result_filtered['t'],
+            'converged': result_filtered['converged']
         },
-        'raw_none': {  # Senza inizializzazione
+        'raw_none': {  # ICP RAW: senza inizializzazione, meno robusto
             'R': result_raw['R'],
             't': result_raw['t'],
             'alpha_rad': np.radians(result_raw['angle_deg']),

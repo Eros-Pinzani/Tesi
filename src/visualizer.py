@@ -36,6 +36,7 @@ from lidar import Lidar  # Tipo del sensore per visualizzazione raggi
 import shutil  # Per pulire cartelle di output delle immagini
 # Nuovi import per ICP grid
 from typing import Dict
+from icp import run_icp_over_history  # Import della funzione ICP
 
 # Eccezioni comuni gestite in modo sicuro (piu' strette di Exception)
 COMMON_EXC = (AttributeError, ValueError, TypeError, RuntimeError)
@@ -571,17 +572,22 @@ def show_trajectories_carousel(
             return lidar[idx]
         return lidar
 
-    # Figura 2x3 ma nascondiamo i pannelli odometria: useremo solo 3 assi visivi (reale, raw, filtrato) + info
-    fig, axes = plt.subplots(2, 3, figsize=(12, 8))
-    plt.subplots_adjust(bottom=0.16, wspace=0.25, hspace=0.28)
-    ax_real = axes[0, 0]
-    ax_raw_none = axes[0, 1]
-    ax_filt_none = axes[1, 0]
-    ax_info = axes[1, 2]
-    # Pannelli non usati (odometria) nascosti
-    axes[0, 2].axis('off')
-    axes[1, 1].axis('off')
-    ax_info.axis('off')
+    # Layout personalizzato: SINISTRA = Reale (grande), DESTRA = RAW sopra + Filtrato sotto
+    # Figsize aumentato per adattarsi meglio allo schermo intero senza zoom eccessivo
+    fig = plt.figure(figsize=(18, 12))
+
+    # SINISTRA: Reale occupa tutta l'altezza (50% larghezza)
+    ax_real = fig.add_subplot(1, 2, 1)  # 1 riga, 2 colonne, posizione 1
+
+    # DESTRA: RAW sopra + Filtrato sotto (50% larghezza, diviso in 2 righe)
+    ax_raw_none = fig.add_subplot(2, 2, 2)    # 2 righe, 2 colonne, posizione 2 (alto-destra)
+    ax_filt_none = fig.add_subplot(2, 2, 4)   # 2 righe, 2 colonne, posizione 4 (basso-destra)
+
+    # Assi info (nascosto, non più usato nel nuovo layout)
+    ax_info = None
+
+    # Margini aggiustati: più spazio in basso a sinistra per i pulsanti sotto il grafico reale
+    plt.subplots_adjust(left=0.05, right=0.98, top=0.96, bottom=0.12, wspace=0.15, hspace=0.20)
 
     state = {"idx": 0, "playing": False, "frame": 0}
     cache: Dict[int, Dict[str, np.ndarray]] = {}
@@ -645,7 +651,8 @@ def show_trajectories_carousel(
     def _draw_real_robot(k: int):
         nonlocal artists_real
         _clear_real_artists()
-        hist = histories[state["idx"]]
+        idxc = state["idx"]
+        hist = histories[idxc]
         r_robot, d_arrow = _robot_scale_from_history(hist)
         is_first = (k == 0)
         # Clippa k al range
@@ -655,6 +662,26 @@ def show_trajectories_carousel(
         center_col = 'green' if is_first else ('red' if is_last else 'orange')
         artists_real = draw_robot(ax_real, hist[k], robot_radius=r_robot, dir_len=d_arrow, color=body_col,
                                   arrow_color='orange', center_color=center_col)
+
+        # AGGIUNGI RAGGI LIDAR ANIMATI (solo hit, no raggi a vuoto)
+        lid_cur = _resolve_lidar(idxc)
+        env_cur = _resolve_env(idxc)
+        if lid_cur is not None and env_cur is not None:
+            robot_pose = hist[k]  # (x, y, theta)
+            try:
+                # Esegui scan LIDAR con ranges
+                points, ranges = lid_cur.scan(robot_pose, env_cur, return_ranges=True)
+                x, y = float(robot_pose[0]), float(robot_pose[1])
+
+                # Disegna solo i raggi con hit reali (distanza < r_max)
+                for i, (pt, r) in enumerate(zip(points, ranges)):
+                    if r < lid_cur.r_max - 1e-9:  # Solo hit reali
+                        # Linea dal robot al punto di hit
+                        line, = ax_real.plot([x, pt[0]], [y, pt[1]],
+                                            color='red', alpha=0.3, linewidth=0.5, zorder=1)
+                        artists_real.append(line)
+            except Exception:
+                pass  # Ignora errori silenziosamente
 
     def _draw_icp_at(k: int, trajs: Dict[str, np.ndarray]):
         nonlocal line_raw_none, line_filt_none
@@ -708,9 +735,11 @@ def show_trajectories_carousel(
         idxc = state["idx"]
         hist = np.asarray(histories[idxc], dtype=float)
         title = titles[idxc]
+        # Rimuovi "(ICP da log)" dal titolo per il pannello reale
+        title_clean = title.replace(" (ICP da log)", "").replace("(ICP da log)", "")
         env_cur = _resolve_env(idxc)
         lid_cur = _resolve_lidar(idxc)
-        _draw_background(ax_real, hist, f"Reale – {title}", env_cur, draw_line=True)
+        _draw_background(ax_real, hist, f"Reale – {title_clean}", env_cur, draw_line=True)
         _draw_background(ax_raw_none, hist, "ICP RAW", env_cur, draw_line=False)
         _draw_background(ax_filt_none, hist, "ICP Filtrato", env_cur, draw_line=False)
         _set_common_limits([ax_real, ax_raw_none, ax_filt_none], hist, env_cur)
@@ -787,7 +816,7 @@ def show_trajectories_carousel(
             state["playing"] = False
             with suppress(*COMMON_EXC):
                 timer.stop()
-            _set_play_label('▶ Play')
+            _set_play_label('▶')
             fig.canvas.draw_idle()
             return True
         return False
@@ -804,7 +833,7 @@ def show_trajectories_carousel(
             state["playing"] = False
             with suppress(*COMMON_EXC):
                 timer.stop()
-            _set_play_label('▶ Play')
+            _set_play_label('▶')
             return
         state["frame"] = k_next
         _draw_real_robot(k_next)
@@ -824,13 +853,25 @@ def show_trajectories_carousel(
 
     timer.add_callback(_on_timer)
 
-    # Pulsanti
-    ax_prev = fig.add_axes((0.14, 0.04, 0.18, 0.07))
-    btn_prev = Button(ax_prev, '◀◀ Precedente')
-    ax_play = fig.add_axes((0.41, 0.04, 0.18, 0.07))
-    btn_play = Button(ax_play, '▶ Play')
-    ax_next = fig.add_axes((0.68, 0.04, 0.18, 0.07))
-    btn_next = Button(ax_next, 'Successivo ▶▶')
+    # Pulsanti piccoli in basso a sinistra sotto il grafico reale
+    # Posizione: left, bottom, width, height (in frazione della figura)
+    btn_width = 0.08   # Larghezza ridotta (era 0.18)
+    btn_height = 0.04  # Altezza ridotta (era 0.07)
+    btn_spacing = 0.01 # Spazio tra pulsanti
+    btn_bottom = 0.02  # Posizione verticale (più in basso)
+    btn_left_start = 0.05  # Inizio a sinistra
+
+    # Pulsante Precedente
+    ax_prev = fig.add_axes((btn_left_start, btn_bottom, btn_width, btn_height))
+    btn_prev = Button(ax_prev, '◀◀')
+
+    # Pulsante Play
+    ax_play = fig.add_axes((btn_left_start + btn_width + btn_spacing, btn_bottom, btn_width, btn_height))
+    btn_play = Button(ax_play, '▶')
+
+    # Pulsante Successivo
+    ax_next = fig.add_axes((btn_left_start + 2*(btn_width + btn_spacing), btn_bottom, btn_width, btn_height))
+    btn_next = Button(ax_next, '▶▶')
 
     def _set_play_label(text: str):
         with suppress(*COMMON_EXC):
@@ -841,7 +882,7 @@ def show_trajectories_carousel(
         state["playing"] = False
         with suppress(*COMMON_EXC):
             timer.stop()
-        _set_play_label('▶ Play')
+        _set_play_label('▶')  # Solo simbolo Play
         draw_current()
 
     def on_play(_event):
@@ -850,12 +891,12 @@ def show_trajectories_carousel(
             _set_timer_interval_for_current()
             with suppress(*COMMON_EXC):
                 timer.start()
-            _set_play_label('▮▮ Pausa')
+            _set_play_label('▮▮')  # Solo simbolo Pausa
         else:
             state["playing"] = False
             with suppress(*COMMON_EXC):
                 timer.stop()
-            _set_play_label('▶ Play')
+            _set_play_label('▶')  # Solo simbolo Play
 
     btn_prev.on_clicked(lambda _e: _navigate(-1))
     btn_play.on_clicked(on_play)
@@ -863,6 +904,8 @@ def show_trajectories_carousel(
 
     # Primo disegno e show
     draw_current()
+
+
     plt.show()
 
 
@@ -1214,15 +1257,18 @@ def show_trajectories_icp_grid(
     for idx, (hist, title) in enumerate(zip(histories, titles)):
         env_cur = _resolve_env(idx)
         lid_cur = _resolve_lidar(idx)
-        fig, axes = plt.subplots(2, 3, figsize=(12, 8))
-        plt.subplots_adjust(bottom=0.12, wspace=0.25, hspace=0.28)
+        # Rimuovi "(ICP da log)" dal titolo
+        title_clean = title.replace(" (ICP da log)", "").replace("(ICP da log)", "")
+        # Figsize aumentato per evitare zoom eccessivo a schermo intero
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+        plt.subplots_adjust(left=0.05, right=0.98, top=0.95, bottom=0.08, wspace=0.20, hspace=0.25)
         ax_real = axes[0, 0]; ax_raw_none = axes[0, 1]; ax_filt_none = axes[1, 0]
         axes[0, 2].axis('off'); axes[1, 1].axis('off'); axes[1, 2].axis('off')
         hist_np = np.asarray(hist, dtype=float)
         # Reale: disegno traiettoria e ambiente
         _plot_static_trajectory_on_axes(
             ax_real, hist_np, step=max(1, int(len(hist_np))),
-            title=f"Reale – {title}", include_title=True, include_axis_labels=True,
+            title=f"Reale – {title_clean}", include_title=True, include_axis_labels=True,
             environment=env_cur, fit_to='environment'
         )
         # Sfondo ambiente sugli altri pannelli
@@ -1260,5 +1306,7 @@ def show_trajectories_icp_grid(
             with suppress(*COMMON_EXC):
                 ax_raw_none.text(0.5, 0.5, 'LiDAR/Ambiente non disponibili', ha='center', va='center', transform=ax_raw_none.transAxes)
                 ax_filt_none.text(0.5, 0.5, 'LiDAR/Ambiente non disponibili', ha='center', va='center', transform=ax_filt_none.transAxes)
-        fig.suptitle(f"Traiettorie – {title}", fontsize=12)
+        fig.suptitle(f"Traiettorie – {title_clean}", fontsize=12)
+
+
     plt.show()
