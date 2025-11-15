@@ -580,7 +580,7 @@ def main():
         t_rw = 40.0  # durata random walk
         v_mean = v_ref
         omega_std = omega_std_ref
-        vs, omegas = tg.random_walk(v_mean=v_mean, omega_std=omega_std, T=t_rw, dt=dt, seed=42)
+        vs, omegas = tg.random_walk(v_mean=v_mean, omega_std=omega_std, T=t_rw, dt=dt, seed=456)
         reset_robot_default(sim)
         histories.append(sim.run_from_sequence(vs, omegas, dt))
         commands_list.append(sim.commands)
@@ -672,16 +672,18 @@ def main():
 
             for idx, (case_hist, case_title, case_env, case_lid) in enumerate(zip(histories, titles, envs, lidars)):
                 # Imposta max_correspondence_distance in base al tipo di traiettoria
-                if idx in (0, 1):  # rettilinei - movimento lineare
+                if idx == 0:  # rettilinea v costante
                     _maxcorr = 0.25
+                elif idx == 1:  # rettilinea v variabile - OTTIMIZZATO
+                    _maxcorr = 0.30  # Leggermente più alto per accelerazioni
                 elif idx == 2:  # circolare v costante
                     _maxcorr = 0.20
                 elif idx == 3:  # circolare v variabile
                     _maxcorr = 0.20
                 elif idx == 4:  # traiettoria a 8 - AUMENTATO per geometria complessa
                     _maxcorr = 0.35  # Più alta per gestire transizione tra lobi
-                else:  # random walk
-                    _maxcorr = 0.30
+                else:  # random walk - AUMENTATO ANCORA per ICP RAW
+                    _maxcorr = 0.60  # MOLTO alta per gestire qualsiasi disallineamento
 
                 # Imposta intervallo di scansione per ICP in base al tipo di traiettoria
                 # Per traiettorie complesse (a 8, rettilinea v variabile, random walk), usa 10 Hz (0.1 secondi)
@@ -734,11 +736,22 @@ def main():
                         continue
 
                     # Esegui ICP con il nuovo algoritmo semplice
+                    # Per traiettorie complesse, usa più iterazioni per convergenza migliore
+                    if idx == 5:  # random walk
+                        _max_iter = 150
+                        _tolerance = 1e-7
+                    elif idx == 1:  # rettilinea v variabile
+                        _max_iter = 60
+                        _tolerance = 1e-6
+                    else:
+                        _max_iter = 50
+                        _tolerance = 1e-6
+
                     result = run_icp_pair(
                         prev_pose, curr_pose,
                         curr_local, prev_local,  # source=k, target=k-_step
-                        max_iterations=50,
-                        tolerance=1e-6,
+                        max_iterations=_max_iter,
+                        tolerance=_tolerance,
                         max_correspondence_distance=_maxcorr
                     )
                     result['k'] = k

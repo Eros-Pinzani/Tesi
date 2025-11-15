@@ -1261,7 +1261,7 @@ def show_trajectories_icp_grid(
         title_clean = title
         # Figsize aumentato per evitare zoom eccessivo a schermo intero
         fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-        plt.subplots_adjust(left=0.05, right=0.98, top=0.95, bottom=0.08, wspace=0.20, hspace=0.45)
+        plt.subplots_adjust(left=0.05, right=0.98, top=0.95, bottom=0.08, wspace=0.20, hspace=0.55)
         ax_real = axes[0, 0]; ax_raw_none = axes[0, 1]; ax_filt_none = axes[1, 0]
         axes[0, 2].axis('off'); axes[1, 1].axis('off'); axes[1, 2].axis('off')
         hist_np = np.asarray(hist, dtype=float)
