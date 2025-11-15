@@ -67,9 +67,9 @@ def setup_environments_per_trajectory(histories: List[np.ndarray], titles: List[
         hist_y_vals = hist_arr[:, 1]
         x_min, x_max = float(np.min(hist_x_vals)), float(np.max(hist_x_vals))
         y_min, y_max = float(np.min(hist_y_vals)), float(np.max(hist_y_vals))
-        span_x = max(1e-9, x_max - x_min)
-        span_y = max(1e-9, y_max - y_min)
-        pad = 0.15 * max(span_x, span_y, 1.0)
+        bounds_span_x = max(1e-9, x_max - x_min)
+        bounds_span_y = max(1e-9, y_max - y_min)
+        pad = 0.15 * max(bounds_span_x, bounds_span_y, 1.0)
         return x_min - pad, y_min - pad, x_max + pad, y_max + pad
 
     def _safety_clearance(bx0: float, by0: float, bx1: float, by1: float) -> float:
@@ -241,14 +241,14 @@ def setup_environments_per_trajectory(histories: List[np.ndarray], titles: List[
         # Per la traiettoria a 8 (idx=4), aumenta il padding dei bounds
         if idx == 4:
             # Ricalcola bounds con padding maggiore (25% invece di 15%)
-            hist_x_vals = hist[:, 0]
-            hist_y_vals = hist[:, 1]
-            x_min, x_max = float(np.min(hist_x_vals)), float(np.max(hist_x_vals))
-            y_min, y_max = float(np.min(hist_y_vals)), float(np.max(hist_y_vals))
-            span_x = max(1e-9, x_max - x_min)
-            span_y = max(1e-9, y_max - y_min)
-            pad = 0.30 * max(span_x, span_y, 1.0)  # 30% di padding invece di 15%
-            b_left, b_bottom, b_right, b_top = x_min - pad, y_min - pad, x_max + pad, y_max + pad
+            traj8_x_vals = hist[:, 0]
+            traj8_y_vals = hist[:, 1]
+            traj8_x_min, traj8_x_max = float(np.min(traj8_x_vals)), float(np.max(traj8_x_vals))
+            traj8_y_min, traj8_y_max = float(np.min(traj8_y_vals)), float(np.max(traj8_y_vals))
+            traj8_span_x = max(1e-9, traj8_x_max - traj8_x_min)
+            traj8_span_y = max(1e-9, traj8_y_max - traj8_y_min)
+            traj8_pad = 0.30 * max(traj8_span_x, traj8_span_y, 1.0)  # 30% di padding invece di 15%
+            b_left, b_bottom, b_right, b_top = traj8_x_min - traj8_pad, traj8_y_min - traj8_pad, traj8_x_max + traj8_pad, traj8_y_max + traj8_pad
 
         env_case.set_bounds(b_left, b_bottom, b_right, b_top)
 
@@ -609,7 +609,8 @@ def setup_environments_per_trajectory(histories: List[np.ndarray], titles: List[
                             env_case.add_circle(cx, cy, r)
                         else:
                             env_case.add_rectangle(cx-r, cy-r, cx+r, cy+r)
-                except:
+                except (ValueError, AttributeError, TypeError):
+                    # Ignora errori di geometria invalida o problemi di tipo
                     pass
 
         # Per la traiettoria a 8 (idx=4), evita ostacoli vicini al centro dove si incrocia

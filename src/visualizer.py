@@ -494,20 +494,20 @@ def show_trajectories_carousel(
         histories,
         titles,
         show_orient_every=20,
-        save_each=False,
-        commands_list=None,
-        dts=None,
-        show_info=False,
-        show_legend=True,
+        _save_each=False,  # Unused: placeholder per compatibilità API
+        _commands_list=None,  # Placeholder per compatibilità API
+        _dts=None,  # Placeholder per compatibilità API
+        _show_info=False,  # Placeholder per compatibilità API
+        _show_legend=True,  # Unused: placeholder per compatibilità API
         *,
         environment: Optional[Union[Environment, Sequence[Optional[Environment]]]] = None,
-        fit_to: str = 'trajectory',
-        error_messages: Optional[Sequence[Optional[str]]] = None,
-        stop_indices: Optional[Sequence[Optional[int]]] = None,
-        stop_fractions: Optional[Sequence[Optional[float]]] = None,
+        _fit_to: str = 'trajectory',  # Placeholder per compatibilità API
+        _error_messages: Optional[Sequence[Optional[str]]] = None,  # Placeholder per compatibilità API
+        _stop_indices: Optional[Sequence[Optional[int]]] = None,  # Placeholder per compatibilità API
+        _stop_fractions: Optional[Sequence[Optional[float]]] = None,  # Placeholder per compatibilità API
         lidar: Optional[Union[Lidar, Sequence[Optional[Lidar]]]] = None,
-        show_lidar: bool = True,
-        lidar_every: int = 1,
+        _show_lidar: bool = True,  # Unused: placeholder per compatibilità API
+        _lidar_every: int = 1,  # Unused: placeholder per compatibilità API
         # Nuovo: traiettorie ICP già ricostruite dal LOG (stessa lunghezza di histories)
         icp_raw_histories: Optional[Sequence[Optional[np.ndarray]]] = None,
         icp_filt_histories: Optional[Sequence[Optional[np.ndarray]]] = None,
@@ -526,14 +526,14 @@ def show_trajectories_carousel(
     if isinstance(show_orient_every, (list, tuple, np.ndarray)):
         assert len(show_orient_every) == len(
             histories), "show_orient_every deve avere stessa lunghezza di delle traiettorie"
-    if commands_list is not None:
-        assert len(commands_list) == len(histories), "commands_list deve avere stessa lunghezza di histories"
-    if error_messages is not None:
-        assert len(error_messages) == len(histories), "error_messages deve avere stessa lunghezza di histories"
-    if stop_indices is not None:
-        assert len(stop_indices) == len(histories), "stop_indices deve avere stessa lunghezza di histories"
-    if stop_fractions is not None:
-        assert len(stop_fractions) == len(histories), "stop_fractions deve avere stessa lunghezza di histories"
+    if _commands_list is not None:
+        assert len(_commands_list) == len(histories), "commands_list deve avere stessa lunghezza di histories"
+    if _error_messages is not None:
+        assert len(_error_messages) == len(histories), "error_messages deve avere stessa lunghezza di histories"
+    if _stop_indices is not None:
+        assert len(_stop_indices) == len(histories), "stop_indices deve avere stessa lunghezza di histories"
+    if _stop_fractions is not None:
+        assert len(_stop_fractions) == len(histories), "stop_fractions deve avere stessa lunghezza di histories"
     if isinstance(lidar, (list, tuple)):
         assert len(lidar) == len(histories), "lidar (lista) deve avere stessa lunghezza di histories"
     if icp_raw_histories is not None:
@@ -541,20 +541,14 @@ def show_trajectories_carousel(
     if icp_filt_histories is not None:
         assert len(icp_filt_histories) == len(histories), "icp_filt_histories deve avere stessa lunghezza di histories"
 
-    # Consuma parametri non ancora usati (API futura) per evitare warning di variabili inutilizzate
-    _ = save_each
-    _ = show_legend
-    _ = show_lidar
-    _ = lidar_every
-
-    # Normalizza dts a lista per uso uniforme
-    if dts is None:
+    # Normalizza _dts a lista per uso uniforme
+    if _dts is None:
         dts_resolved = [1.0] * len(histories)
-    elif isinstance(dts, (list, tuple)):
-        assert len(dts) == len(histories), "dts deve avere stessa lunghezza di histories"
-        dts_resolved = [float(x) for x in dts]
+    elif isinstance(_dts, (list, tuple)):
+        assert len(_dts) == len(histories), "dts deve avere stessa lunghezza di histories"
+        dts_resolved = [float(x) for x in _dts]
     else:
-        dts_resolved = [float(dts)] * len(histories)
+        dts_resolved = [float(_dts)] * len(histories)
 
     def _resolve_env(idx: int) -> Optional[Environment]:
         """Ritorna l'Environment per la traiettoria idx (singolo o per-traiettoria)."""
@@ -582,9 +576,6 @@ def show_trajectories_carousel(
     # DESTRA: RAW sopra + Filtrato sotto (50% larghezza, diviso in 2 righe)
     ax_raw_none = fig.add_subplot(2, 2, 2)    # 2 righe, 2 colonne, posizione 2 (alto-destra)
     ax_filt_none = fig.add_subplot(2, 2, 4)   # 2 righe, 2 colonne, posizione 4 (basso-destra)
-
-    # Assi info (nascosto, non più usato nel nuovo layout)
-    ax_info = None
 
     # Margini aggiustati: più spazio in basso a sinistra per i pulsanti sotto il grafico reale
     # hspace aumentato per evitare sovrapposizione tra label x grafico sopra e titolo grafico sotto
@@ -631,7 +622,7 @@ def show_trajectories_carousel(
     def _set_common_limits(ax_list, hist: np.ndarray, env: Optional[Environment]):
         r_robot, d_arrow = _robot_scale_from_history(hist)
         x0, x1, y0, y1 = _compute_axes_limits_with_glyphs(hist, step=max(1, len(hist)), r_robot=r_robot,
-                                                          d_arrow=d_arrow, env=env, fit_to=fit_to)
+                                                          d_arrow=d_arrow, env=env, fit_to=_fit_to)
         for a in ax_list:
             a.set_xlim(x0, x1)
             a.set_ylim(y0, y1)
@@ -665,24 +656,25 @@ def show_trajectories_carousel(
                                   arrow_color='orange', center_color=center_col)
 
         # AGGIUNGI RAGGI LIDAR ANIMATI (solo hit, no raggi a vuoto)
-        lid_cur = _resolve_lidar(idxc)
+        lidar_current = _resolve_lidar(idxc)
         env_cur = _resolve_env(idxc)
-        if lid_cur is not None and env_cur is not None:
+        if lidar_current is not None and env_cur is not None:
             robot_pose = hist[k]  # (x, y, theta)
             try:
                 # Esegui scan LIDAR con ranges
-                points, ranges = lid_cur.scan(robot_pose, env_cur, return_ranges=True)
+                points, ranges = lidar_current.scan(robot_pose, env_cur, return_ranges=True)
                 x, y = float(robot_pose[0]), float(robot_pose[1])
 
                 # Disegna solo i raggi con hit reali (distanza < r_max)
                 for i, (pt, r) in enumerate(zip(points, ranges)):
-                    if r < lid_cur.r_max - 1e-9:  # Solo hit reali
+                    if r < lidar_current.r_max - 1e-9:  # Solo hit reali
                         # Linea dal robot al punto di hit
                         line, = ax_real.plot([x, pt[0]], [y, pt[1]],
                                             color='red', alpha=0.3, linewidth=0.5, zorder=1)
                         artists_real.append(line)
-            except Exception:
-                pass  # Ignora errori silenziosamente
+            except (ValueError, TypeError, IndexError):
+                # Ignora errori di conversione o accesso agli indici
+                pass
 
     def _draw_icp_at(k: int, trajs: Dict[str, np.ndarray]):
         nonlocal line_raw_none, line_filt_none
@@ -739,7 +731,7 @@ def show_trajectories_carousel(
         # Rimuovi "(ICP da log)" dal titolo per il pannello reale
         title_clean = title.replace(" (ICP da log)", "").replace("(ICP da log)", "")
         env_cur = _resolve_env(idxc)
-        lid_cur = _resolve_lidar(idxc)
+        # lid_cur non più necessario qui (lidar gestito in _draw_lidar_at)
         _draw_background(ax_real, hist, f"Reale – {title_clean}", env_cur, draw_line=True)
         _draw_background(ax_raw_none, hist, "ICP RAW", env_cur, draw_line=False)
         _draw_background(ax_filt_none, hist, "ICP Filtrato", env_cur, draw_line=False)
@@ -769,9 +761,9 @@ def show_trajectories_carousel(
         trajs = cache[idxc]
         _draw_real_robot(0)
         _draw_icp_at(0, trajs)
-        if show_info:
+        if _show_info:
             dt_cur = float(dts_resolved[idxc])
-            cmds = commands_list[idxc] if commands_list is not None else None
+            cmds = _commands_list[idxc] if _commands_list is not None else None
             info_text = _build_info_text(hist, k_pose=0, dt=dt_cur, commands=cmds, use_cmd_of_prev=False,
                                          show_next_pose=False)
             info_artist = fig.text(0.98, 0.96, info_text, ha='right', va='top', fontsize=9,
@@ -781,18 +773,18 @@ def show_trajectories_carousel(
 
     def _stop_if_collision_reached(next_k: int) -> bool:
         nonlocal err_artist
-        if stop_indices is None:
+        if _stop_indices is None:
             return False
         idxc = state["idx"]
-        stop_k = stop_indices[idxc] if idxc < len(histories) else None
+        stop_k = _stop_indices[idxc] if idxc < len(histories) else None
         if stop_k is None:
             return False
         if next_k >= int(stop_k):
             hist = histories[idxc]
             kcol = int(stop_k)
             frac = 1.0
-            if stop_fractions is not None and idxc < len(stop_fractions) and stop_fractions[idxc] is not None:
-                frac = float(stop_fractions[idxc])
+            if _stop_fractions is not None and idxc < len(_stop_fractions) and _stop_fractions[idxc] is not None:
+                frac = float(_stop_fractions[idxc])
             if kcol >= 1:
                 pose = _interp_pose(hist[kcol - 1], hist[kcol], max(0.0, min(1.0, frac - 1e-3)))
             else:
@@ -809,8 +801,8 @@ def show_trajectories_carousel(
                 kcut = int(min(kcol, len(hist) - 1))
                 _draw_icp_at(kcut, trajs)
             msg = None
-            if error_messages is not None and idxc < len(error_messages) and error_messages[idxc]:
-                msg = error_messages[idxc]
+            if _error_messages is not None and idxc < len(_error_messages) and _error_messages[idxc]:
+                msg = _error_messages[idxc]
             if not msg:
                 msg = "Ostacolo lungo la traiettoria"
             err_artist = _update_error_artist(fig, err_artist, msg)
@@ -840,9 +832,9 @@ def show_trajectories_carousel(
         _draw_real_robot(k_next)
         trajs = cache[idxc]
         _draw_icp_at(k_next, trajs)
-        if show_info:
+        if _show_info:
             dt_cur = float(dts_resolved[idxc])
-            cmds = commands_list[idxc] if commands_list is not None else None
+            cmds = _commands_list[idxc] if _commands_list is not None else None
             info_text = _build_info_text(np.asarray(hist), k_pose=int(k_next), dt=dt_cur, commands=cmds,
                                          use_cmd_of_prev=True, show_next_pose=False)
             if info_artist is not None:
@@ -957,7 +949,8 @@ def save_trajectories_images(
         if callable(progress_cb):
             try:
                 progress_cb(i, total)
-            except Exception:
+            except TypeError:
+                # Ignora errori nella chiamata al callback
                 pass
         plt.close(fig)
 
@@ -970,7 +963,6 @@ def save_lidar_scans_images(
         dt: float,
         *,
         interval_s: float = 1.0,
-        fit_to: str = 'environment',
         progress_cb: Optional[callable] = None,
         quiet: bool = True,
 ) -> None:
@@ -989,7 +981,8 @@ def save_lidar_scans_images(
         pose = history[k]
         try:
             scan_pts, ranges = lidar.scan(pose, environment, return_ranges=True)
-        except Exception:
+        except (ValueError, AttributeError, TypeError):
+            # Gestisce errori durante la scansione lidar
             continue
         scan_pts = np.asarray(scan_pts)
         ranges = np.asarray(ranges)
@@ -998,15 +991,19 @@ def save_lidar_scans_images(
 
         fig, ax = plt.subplots(figsize=(7, 7))
         if environment is not None:
-            with suppress(Exception):
+            try:
                 environment.plot(ax=ax)
+            except (AttributeError, ValueError, TypeError):
+                # Ignora errori durante il plot dell'ambiente
+                pass
         # Limiti: preferisci bounds ambiente
         if environment is not None and getattr(environment, 'bounds', None) is not None:
             try:
                 bx, by = environment.bounds.exterior.xy  # type: ignore[attr-defined]
                 x_min, x_max = float(np.min(bx)), float(np.max(bx))
                 y_min, y_max = float(np.min(by)), float(np.max(by))
-            except Exception:
+            except (AttributeError, ValueError, TypeError):
+                # Gestisce errori di accesso attributi o conversione
                 x_min = y_min = -1.0
                 x_max = y_max = 1.0
         else:
@@ -1043,8 +1040,10 @@ def save_lidar_scans_images(
         if not quiet and progress_cb is None:
             print(f"[save_lidar_scans_images] Salvato: {out_path}")
         if callable(progress_cb):
-            with suppress(Exception):
+            try:
                 progress_cb(idx_k, total)
+            except TypeError:
+                pass
         plt.close(fig)
 
 
@@ -1080,7 +1079,8 @@ def save_lidar_polar_images(
         pose = history[k]
         try:
             _pts, ranges = lidar.scan(pose, environment, return_ranges=True)
-        except Exception:
+        except (ValueError, AttributeError, TypeError):
+            # Gestisce errori durante la scansione
             continue
         ranges = np.asarray(ranges)
         mask_hit = ranges < float(lidar.r_max) - 1e-12
@@ -1100,8 +1100,10 @@ def save_lidar_polar_images(
         ax.set_title(f"r(θ) – {title} – t={float(k) * float(dt):.2f} s")
         ax.set_ylim(-0.02 * float(lidar.r_max), 1.02 * float(lidar.r_max))
         ax.set_xlim(-1e-3, 360.0 + 1e-3)
-        with suppress(Exception):
+        try:
             ax.set_xticks([0, 60, 120, 180, 240, 300, 360])
+        except (ValueError, TypeError):
+            pass
         if (th_hit.size > 0) or (include_misses and th_miss.size > 0):
             ax.legend(loc='upper right', framealpha=0.85, fontsize=8)
         out_path = out_dir / f"{_slugify(title)}_polar_t{float(k) * float(dt):.2f}s_{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"
@@ -1109,8 +1111,10 @@ def save_lidar_polar_images(
         if not quiet and progress_cb is None:
             print(f"[save_lidar_polar_images] Salvato: {out_path}")
         if callable(progress_cb):
-            with suppress(Exception):
+            try:
                 progress_cb(idx_k, total)
+            except TypeError:
+                pass
         plt.close(fig)
 
 
@@ -1166,9 +1170,12 @@ def _accumulate_icp_trajectory(history: np.ndarray, icp_results: List[Dict], key
         x_k = x_prev + float(t_world[0])
         y_k = y_prev + float(t_world[1])
         r_w_k = r_w_prev @ r_rel
-        with suppress(Exception):
+        try:
             u, _s, vt = np.linalg.svd(r_w_k)
             r_w_k = u @ vt
+        except (np.linalg.LinAlgError, ValueError):
+            # Gestisce errori SVD
+            pass
         th_k = float(np.arctan2(r_w_k[1, 0], r_w_k[0, 0]))
         out[k, 0] = x_k
         out[k, 1] = y_k
@@ -1178,44 +1185,34 @@ def _accumulate_icp_trajectory(history: np.ndarray, icp_results: List[Dict], key
 
 
 def _compute_icp_trajectories_for_case(history: np.ndarray, lidar: Lidar, env: Optional[Environment], *,
-                                       max_correspondence_distance: float = 0.40,
-                                       trim_fraction: float = 0.6,
-                                       damping_enabled: bool = True,
-                                       angle_thresh_deg: float = 10.0,
-                                       struct_ratio_thresh: float = 0.02,
-                                       damp_factor: float = 0.75,
-                                       sliding_filter_enabled: bool = True,
-                                       sliding_cos_threshold: float = 0.985,
-                                       angle_balance_enabled: bool = True,
-                                       angle_bin_deg: float = 8.0,
-                                       angle_max_per_bin: int = 18,
-                                       angle_prefer_far: bool = True,
-                                       use_scipy: bool = True,
-                                       progress_cb: Optional[callable] = None) -> Dict[str, np.ndarray]:
+                                       _max_correspondence_distance: float = 0.40,  # Unused: legacy parameter
+                                       _trim_fraction: float = 0.6,  # Unused: legacy parameter
+                                       _damping_enabled: bool = True,  # Unused: legacy parameter
+                                       _angle_thresh_deg: float = 10.0,  # Unused: legacy parameter
+                                       _struct_ratio_thresh: float = 0.02,  # Unused: legacy parameter
+                                       _damp_factor: float = 0.75,  # Unused: legacy parameter
+                                       _sliding_filter_enabled: bool = True,  # Unused: legacy parameter
+                                       _sliding_cos_threshold: float = 0.985,  # Unused: legacy parameter
+                                       _angle_balance_enabled: bool = True,  # Unused: legacy parameter
+                                       _angle_bin_deg: float = 8.0,  # Unused: legacy parameter
+                                       _angle_max_per_bin: int = 18,  # Unused: legacy parameter
+                                       _angle_prefer_far: bool = True,  # Unused: legacy parameter
+                                       _use_scipy: bool = True,  # Unused: legacy parameter
+                                       _progress_cb: Optional[callable] = None) -> Dict[str, np.ndarray]:  # Unused: legacy parameter
     if env is None or lidar is None:
         zero = np.asarray(history, dtype=float).copy()
         for k in range(1, len(zero)):
             zero[k, :] = zero[0, :]
         return {'raw_none': zero.copy(), 'none': zero.copy()}
+
+    # Nota: run_icp_over_history è una funzione stub che restituisce traiettorie vuote
+    # I parametri avanzati (max_iterations, tolerance, ecc.) sono stati rimossi
+    # perché non più supportati nella nuova implementazione semplificata
     icp_results = run_icp_over_history(
-        np.asarray(history, dtype=float), lidar, env,
-        step=1,
-        max_iterations=40,
-        tolerance=1e-5,
-        max_correspondence_distance=max_correspondence_distance,
-        use_scipy=use_scipy,
-        trim_fraction=trim_fraction,
-        damping_enabled=damping_enabled,
-        angle_thresh_deg=angle_thresh_deg,
-        struct_ratio_thresh=struct_ratio_thresh,
-        damp_factor=damp_factor,
-        sliding_filter_enabled=sliding_filter_enabled,
-        sliding_cos_threshold=sliding_cos_threshold,
-        angle_balance_enabled=angle_balance_enabled,
-        angle_bin_deg=angle_bin_deg,
-        angle_max_per_bin=angle_max_per_bin,
-        angle_prefer_far=angle_prefer_far,
-        progress_cb=progress_cb,
+        np.asarray(history, dtype=float),
+        lidar,
+        env,
+        step=1
     )
     return {
         'raw_none': _accumulate_icp_trajectory(history, icp_results, 'raw_none'),
@@ -1228,15 +1225,16 @@ def show_trajectories_icp_grid(
         titles,
         *,
         environment: Optional[Union[Environment, Sequence[Optional[Environment]]]] = None,
-        lidar: Optional[Union[Lidar, Sequence[Optional[Lidar]]]] = None,
-        dts=None,
-        commands_list=None,
         fit_to: str = 'environment',
-        show_info: bool = True,
-        error_messages: Optional[Sequence[Optional[str]]] = None,
-        stop_indices: Optional[Sequence[Optional[int]]] = None,
-        stop_fractions: Optional[Sequence[Optional[float]]] = None,
 ):
+    """Visualizzazione statica a griglia delle traiettorie ICP.
+
+    Args:
+        histories: Lista di array numpy con le traiettorie
+        titles: Titoli per ogni traiettoria
+        environment: Ambiente singolo o lista di ambienti per ogni traiettoria
+        fit_to: Come adattare i limiti degli assi ('trajectory' o 'environment')
+    """
     assert len(histories) == len(titles) and len(histories) > 0
 
     def _resolve_env(idx: int) -> Optional[Environment]:
@@ -1247,17 +1245,12 @@ def show_trajectories_icp_grid(
             return environment[idx]
         return environment
 
-    def _resolve_lidar(idx: int) -> Optional[Lidar]:
-        if lidar is None:
-            return None
-        if isinstance(lidar, (list, tuple)):
-            assert len(lidar) == len(histories)
-            return lidar[idx]
-        return lidar
+    # Nota: _resolve_lidar rimossa - non utilizzata in questa funzione
+    # Il lidar non viene più usato per questa visualizzazione statica
 
-    for idx, (hist, title) in enumerate(zip(histories, titles)):
-        env_cur = _resolve_env(idx)
-        lid_cur = _resolve_lidar(idx)
+    for traj_idx, (hist, title) in enumerate(zip(histories, titles)):
+        env_cur = _resolve_env(traj_idx)
+        # lid_cur rimosso: non utilizzato in questa funzione
         title_clean = title
         # Figsize aumentato per evitare zoom eccessivo a schermo intero
         fig, axes = plt.subplots(2, 3, figsize=(18, 12))
@@ -1273,10 +1266,14 @@ def show_trajectories_icp_grid(
         )
         # Sfondo ambiente sugli altri pannelli
         if env_cur is not None:
-            with suppress(Exception):
+            try:
                 env_cur.plot(ax=ax_raw_none)
-            with suppress(Exception):
+            except (AttributeError, ValueError, TypeError):
+                pass
+            try:
                 env_cur.plot(ax=ax_filt_none)
+            except (AttributeError, ValueError, TypeError):
+                pass
         ax_raw_none.set_title('ICP RAW')
         ax_filt_none.set_title('ICP Filtrato')
         # Limiti coerenti su tutti i pannelli

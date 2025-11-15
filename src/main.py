@@ -76,7 +76,8 @@ class _Tee:
         self._buf = ''
         self._suppressed_last = False  # evita righe vuote dopo soppressione
 
-    def _should_suppress_line(self, line: str) -> bool:
+    @staticmethod
+    def _should_suppress_line(line: str) -> bool:
         if not line:
             return False
         s = line.lstrip('\r')
@@ -131,11 +132,12 @@ class _Tee:
                 # flush immediato del file per non perdere dati in caso di terminazione improvvisa
                 if hasattr(self._secondary, 'flush'):
                     self._secondary.flush()
-            except Exception:
+            except (IOError, OSError, AttributeError):
+                # Gestisce errori di I/O o problemi con l'oggetto file
                 self._secondary.write(str(data))
                 try:
                     self._secondary.flush()
-                except Exception:
+                except (IOError, OSError, AttributeError):
                     pass
         return len(data)
 
@@ -418,7 +420,8 @@ def parse_icp_triplets_from_log(log_path: str, n_cases: int) -> List[Dict[str, O
             try:
                 idx = int(m_hdr.group(1))
                 cur_case_idx = idx - 1 if 1 <= idx <= n_cases else None
-            except Exception:
+            except (ValueError, IndexError):
+                # Gestisce errori di conversione o accesso al gruppo
                 cur_case_idx = None
             continue
         if cur_case_idx is None:
@@ -431,7 +434,8 @@ def parse_icp_triplets_from_log(log_path: str, n_cases: int) -> List[Dict[str, O
             dx = float(m_pose.group(2))
             dy = float(m_pose.group(3))
             a_deg = float(m_pose.group(4))
-        except Exception:
+        except (ValueError, IndexError):
+            # Gestisce errori di conversione float o accesso ai gruppi
             continue
         if label.startswith('Reali'):
             per_case[cur_case_idx]['real'].append((dx, dy, a_deg))
@@ -619,7 +623,6 @@ def main():
                  visualizer.save_lidar_scans_images(
                     save_hist, save_title, save_lid, save_env, dt,
                     interval_s=float(args.scan_interval),
-                    fit_to='environment',
                     progress_cb=progress_cb_fn,
                     quiet=args.quiet,
                 )
@@ -772,8 +775,8 @@ def main():
             except OSError:
                 pass
 
-            def _select_icp_representative(case_results: List[dict]) -> Optional[dict]:
-                cand = [res_item for res_item in case_results if res_item.get('ok')]
+            def _select_icp_representative(results_list: List[dict]) -> Optional[dict]:
+                cand = [res_item for res_item in results_list if res_item.get('ok')]
                 if not cand:
                     return None
                 def _score(res_item: dict) -> float:
@@ -842,8 +845,8 @@ def main():
                     "- Pose: confronto Δx, Δy, α (deg) tra GT, ICP filtrato e RAW (tutte nel frame k-1)\n"
                 )
                 bold = "\033[1m"; reset = "\033[0m"
-                def _case_title(idx_case: int, title: str) -> str:
-                    return f"{bold}CASO {idx_case}: {title.upper()}{reset}"
+                def _case_title(case_idx: int, case_title_str: str) -> str:
+                    return f"{bold}CASO {case_idx}: {case_title_str.upper()}{reset}"
                 for idxc, (case_hist, case_title, case_results) in enumerate(zip(histories, titles, icp_all_cases), start=1):
                     print(f"\n{_case_title(idxc, case_title)}", flush=True)
                     for res in case_results:
@@ -865,7 +868,7 @@ def main():
                         # Pose
                         k = int(res['k'])
                         prev_k = res.get('prev_k', k-1)  # usa prev_k se disponibile, altrimenti k-1 per retrocompatibilità
-                        if prev_k >= 0 and prev_k < len(case_hist) and k < len(case_hist):
+                        if 0 <= prev_k < len(case_hist) and k < len(case_hist):
                             prev_pose = case_hist[prev_k]; curr_pose = case_hist[k]
                             r_gt, t_gt = compute_relative_transform_from_odometry(prev_pose, curr_pose)
                             def _ang_deg(rm):
@@ -887,7 +890,8 @@ def main():
             # Assicura che le stampe ICP siano state flushate su file prima di leggere
             try:
                 sys.stdout.flush(); sys.stderr.flush()
-            except Exception:
+            except (IOError, OSError):
+                # Gestisce errori di flush degli stream
                 pass
             triplets = parse_icp_triplets_from_log(_log_path, n_cases=len(titles))
             icp_histories_from_log = []
@@ -955,34 +959,27 @@ def main():
                     viewer_histories,
                     viewer_titles,
                     environment=envs,
-                    lidar=lidars,
-                    dts=dt,
-                    commands_list=viewer_cmds,
                     fit_to='environment',
-                    show_info=True,
-                    error_messages=[None]*len(viewer_histories),
-                    stop_indices=stop_indices,
-                    stop_fractions=stop_fractions,
                 )
             else:
                 visualizer.show_trajectories_carousel(
                     viewer_histories,
                     viewer_titles,
                     show_orient_every=show_steps,
-                    save_each=False,
-                    commands_list=viewer_cmds,
-                    dts=dt,
-                    show_info=True,
+                    _save_each=False,
+                    _commands_list=viewer_cmds,
+                    _dts=dt,
+                    _show_info=True,
                     environment=envs,
-                    fit_to='environment',
-                    stop_indices=stop_indices,
-                    stop_fractions=stop_fractions,
+                    _fit_to='environment',
+                    _stop_indices=stop_indices,
+                    _stop_fractions=stop_fractions,
                     lidar=lidars,
-                    show_lidar=True,
-                    lidar_every=int(max(1, args.viewer_lidar_every)),
+                    _show_lidar=True,
+                    _lidar_every=int(max(1, args.viewer_lidar_every)),
                     icp_raw_histories=viewer_raw,
                     icp_filt_histories=viewer_filt,
-                 )
+                )
 
 
     finally:
@@ -993,7 +990,8 @@ def main():
         finally:
             try:
                 _log_file.close()
-            except Exception:
+            except (IOError, OSError):
+                # Gestisce errori durante la chiusura del file
                 pass
 
 

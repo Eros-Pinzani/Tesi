@@ -101,10 +101,10 @@ def save_motion_arrows(res: Dict, title: str, out_path: str):
     ests = []
 
     # Aggiungi Ground Truth se disponibile (situazione reale)
-    gt_R = res.get('gt_R')
+    gt_r = res.get('gt_R')
     gt_t = res.get('gt_t')
-    if gt_R is not None and gt_t is not None:
-        ests.append(('Situazione Reale (GT)', gt_t, gt_R, 'black'))
+    if gt_r is not None and gt_t is not None:
+        ests.append(('Situazione Reale (GT)', gt_t, gt_r, 'black'))
 
     # Aggiungi ICP filtrato e RAW
     ests.append(('ICP (filtrato)', res['none']['t'], res['none']['R'], 'tab:red'))
