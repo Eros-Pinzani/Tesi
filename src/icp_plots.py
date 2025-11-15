@@ -31,6 +31,7 @@ def save_concept_correspondences(res: Dict, title: str, out_path: str, max_lines
     src = np.asarray(res['src_local'])
     if tgt.size == 0 or src.size == 0:
         return
+
     # Costruisci NN su subset semplice (euclideo O(N*M) sul subset)
     n = min(len(src), len(tgt), max_lines)
     src_sub = src[:n]
@@ -39,13 +40,20 @@ def save_concept_correspondences(res: Dict, title: str, out_path: str, max_lines
     for p in src_sub:
         d2 = np.sum((tgt - p) ** 2, axis=1)
         idxs.append(int(np.argmin(d2)))
+
     plt.figure(figsize=(5, 4))
     plt.scatter(tgt[:, 0], tgt[:, 1], s=10, c='tab:blue', label='Target (k-1)')
     plt.scatter(src[:, 0], src[:, 1], s=10, c='tab:red', label='Source (k)')
+
+    # Disegna le linee di corrispondenza in nero (rappresentano la situazione reale)
     for i, j in enumerate(idxs):
         xs = [src_sub[i, 0], tgt[j, 0]]
         ys = [src_sub[i, 1], tgt[j, 1]]
-        plt.plot(xs, ys, c='gray', lw=0.6, alpha=0.7)
+        plt.plot(xs, ys, c='black', lw=0.6, alpha=0.7)
+
+    # Aggiungi una linea dummy per la legenda delle corrispondenze
+    plt.plot([], [], c='black', lw=0.6, alpha=0.7, label='Corrispondenze (situazione reale)')
+
     plt.axis('equal'); plt.grid(alpha=0.3)
     plt.title(title)
     plt.legend(loc='upper right', fontsize=8)
@@ -88,17 +96,54 @@ def save_convergence_curves(res: Dict, title: str, out_path: str):
 def save_motion_arrows(res: Dict, title: str, out_path: str):
     def ang_deg(r_mat):
         return float(np.degrees(np.arctan2(r_mat[1, 0], r_mat[0, 0])))
-    ests = [
-        ('ICP (filtrato)', res['none']['t'], res['none']['R'], 'tab:red'),
-        ('RAW', res['raw_none']['t'], res['raw_none']['R'], 'tab:orange'),
-    ]
-    plt.figure(figsize=(5, 4))
+
+    # Prepara le frecce: Ground Truth + ICP filtrato + RAW
+    ests = []
+
+    # Aggiungi Ground Truth se disponibile (situazione reale)
+    gt_R = res.get('gt_R')
+    gt_t = res.get('gt_t')
+    if gt_R is not None and gt_t is not None:
+        ests.append(('Situazione Reale (GT)', gt_t, gt_R, 'black'))
+
+    # Aggiungi ICP filtrato e RAW
+    ests.append(('ICP (filtrato)', res['none']['t'], res['none']['R'], 'tab:red'))
+    ests.append(('RAW', res['raw_none']['t'], res['raw_none']['R'], 'tab:orange'))
+
+    plt.figure(figsize=(6, 6))
+
+    # Calcola i limiti necessari per mostrare tutte le frecce
+    max_x, max_y = 0.0, 0.0
     for name, t, r_est, col in ests:
         t = np.asarray(t)
-        plt.quiver(0, 0, t[0], t[1], angles='xy', scale_units='xy', scale=1, color=col, width=0.004, label=f'{name} (α={ang_deg(np.asarray(r_est)):+.2f}°)')
-    plt.axis('equal'); plt.grid(alpha=0.3)
+        r_est = np.asarray(r_est)
+        # Freccia più spessa per la situazione reale (nero)
+        width = 0.006 if col == 'black' else 0.004
+        plt.quiver(0, 0, t[0], t[1], angles='xy', scale_units='xy', scale=1,
+                  color=col, width=width,
+                  label=f'{name} (α={ang_deg(r_est):+.2f}°)')
+        # Traccia i limiti massimi
+        max_x = max(max_x, abs(t[0]))
+        max_y = max(max_y, abs(t[1]))
+
+    # Imposta limiti degli assi con margine ottimale per mostrare frecce complete
+    margin = 1.5  # Margine del 50% extra - equilibrio tra visibilità e compattezza
+    max_val = max(max_x, max_y) * margin
+
+    # Imposta limiti PRIMA di chiamare gca() per aspect ratio
+    if max_val > 0:
+        plt.xlim(-max_val, max_val)
+        plt.ylim(-max_val, max_val)
+
+    # Usa set_aspect invece di axis('equal') per non sovrascrivere i limiti
+    ax = plt.gca()
+    ax.set_aspect('equal', adjustable='box')
+
+    plt.grid(alpha=0.3)
+    plt.xlabel('Δx [m]', fontsize=10)
+    plt.ylabel('Δy [m]', fontsize=10)
     plt.title(title)
-    plt.legend(loc='upper right', fontsize=8)
+    plt.legend(loc='best', fontsize=8)
     _savefig(out_path)
 
 
@@ -116,3 +161,78 @@ def save_raw_vs_filtered(res: Dict, title: str, out_path: str):
     plt.title(title)
     plt.legend(loc='upper right', fontsize=8)
     _savefig(out_path)
+
+
+# 15) Errore di posizione e orientazione nel tempo
+
+def save_error_over_time(real_traj: np.ndarray, icp_traj: np.ndarray, raw_traj: np.ndarray,
+                         title: str, out_path: str, dt: float = 0.1):
+    """
+    Grafico degli errori ICP vs ground truth nel tempo.
+
+    Args:
+        real_traj: Traiettoria reale (ground truth) [N x 3] con (x, y, theta)
+        icp_traj: Traiettoria stimata dall'ICP filtrato [N x 3]
+        raw_traj: Traiettoria stimata dall'ICP RAW [N x 3]
+        title: Titolo del grafico
+        out_path: Percorso dove salvare l'immagine
+        dt: Intervallo temporale tra i campioni (secondi)
+    """
+    real_traj = np.asarray(real_traj, dtype=float)
+    icp_traj = np.asarray(icp_traj, dtype=float)
+    raw_traj = np.asarray(raw_traj, dtype=float)
+
+    # Assicuriamoci che le traiettorie abbiano la stessa lunghezza
+    n = min(len(real_traj), len(icp_traj), len(raw_traj))
+    if n < 2:
+        return  # Non abbastanza punti per plottare
+
+    real_traj = real_traj[:n]
+    icp_traj = icp_traj[:n]
+    raw_traj = raw_traj[:n]
+
+    # Calcola il tempo
+    time = np.arange(n) * dt
+
+    # Calcola errore di posizione (distanza euclidea)
+    pos_error_icp = np.sqrt((real_traj[:, 0] - icp_traj[:, 0])**2 +
+                             (real_traj[:, 1] - icp_traj[:, 1])**2)
+    pos_error_raw = np.sqrt((real_traj[:, 0] - raw_traj[:, 0])**2 +
+                             (real_traj[:, 1] - raw_traj[:, 1])**2)
+
+    # Calcola errore di orientazione (differenza angolare normalizzata in [-pi, pi])
+    def angle_diff(a1, a2):
+        diff = a1 - a2
+        return np.arctan2(np.sin(diff), np.cos(diff))
+
+    orient_error_icp = np.abs(angle_diff(real_traj[:, 2], icp_traj[:, 2]))
+    orient_error_raw = np.abs(angle_diff(real_traj[:, 2], raw_traj[:, 2]))
+
+    # Converti orientazione in gradi per visualizzazione
+    orient_error_icp_deg = np.degrees(orient_error_icp)
+    orient_error_raw_deg = np.degrees(orient_error_raw)
+
+    # Crea il grafico con due subplot
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+
+    # Subplot 1: Errore di posizione
+    ax1.plot(time, pos_error_icp, 'r-', linewidth=1.5, label='ICP (filtrato)')
+    ax1.plot(time, pos_error_raw, 'orange', linestyle='--', linewidth=1.5, label='RAW')
+    ax1.set_xlabel('Tempo [s]', fontsize=11)
+    ax1.set_ylabel('Errore di Posizione [m]', fontsize=11)
+    ax1.set_title(f'{title} - Errore di Posizione', fontsize=12, fontweight='bold')
+    ax1.grid(alpha=0.3)
+    ax1.legend(loc='best', fontsize=10)
+
+    # Subplot 2: Errore di orientazione
+    ax2.plot(time, orient_error_icp_deg, 'r-', linewidth=1.5, label='ICP (filtrato)')
+    ax2.plot(time, orient_error_raw_deg, 'orange', linestyle='--', linewidth=1.5, label='RAW')
+    ax2.set_xlabel('Tempo [s]', fontsize=11)
+    ax2.set_ylabel('Errore di Orientazione [°]', fontsize=11)
+    ax2.set_title(f'{title} - Errore di Orientazione', fontsize=12, fontweight='bold')
+    ax2.grid(alpha=0.3)
+    ax2.legend(loc='best', fontsize=10)
+
+    plt.tight_layout()
+    _savefig(out_path)
+

@@ -518,23 +518,51 @@ L'odometria fornisce:
 
 1. **`save_concept_correspondences(res, title, out_path, max_lines)`**:
    - Disegna schema concettuale delle corrispondenze ICP
-   - Linee grigie collegano punti source a nearest neighbors in target
-   - Limita numero di linee per leggibilità
+   - **Linee nere** collegano punti source a nearest neighbors in target
+   - Rappresenta la "situazione reale" delle corrispondenze trovate dall'algoritmo
+   - Limita numero di linee per leggibilità (default: max 120 linee)
+   - Include legenda esplicativa per interpretare il grafico
 
 2. **`save_alignment_overlays(res, title, out_path)`**:
    - Overlay finale: target + source trasformato
-   - Confronta risultati ICP filtrato vs RAW
+   - Confronta risultati ICP filtrato (rosso) vs RAW (arancione)
+   - Target in nero come riferimento
 
 3. **`save_convergence_curves(res, title, out_path)`**:
    - Plot RMSE vs numero iterazioni
-   - Mostra velocità di convergenza
+   - Mostra velocità di convergenza per entrambi i metodi
+   - Linea continua per ICP filtrato, tratteggiata per RAW
 
 4. **`save_motion_arrows(res, title, out_path)`**:
    - Frecce che rappresentano trasformazione stimata
-   - Mostra Δx, Δy e angolo di rotazione
+   - **Include Ground Truth** (freccia nera più spessa) dal movimento reale
+   - Freccia rossa per ICP filtrato, arancione per RAW
+   - Mostra Δx, Δy e angolo di rotazione α per ogni metodo
+   - **Limiti assi ottimizzati**: margine automatico del 50% per visualizzare tutte le frecce complete
+   - Aspect ratio mantenuto per corretta visualizzazione angoli
 
 5. **`save_raw_vs_filtered(res, title, out_path)`**:
    - Confronto diretto RAW vs Filtrato su stessi assi
+   - Evidenzia il beneficio dell'inizializzazione odometrica
+
+6. **`save_error_over_time(real_traj, icp_traj, raw_traj, title, out_path, dt)`**: *(NUOVO)*
+   - Analisi temporale dell'accuratezza dell'ICP lungo l'intera traiettoria
+   - **Due subplot verticali**:
+     - Errore di posizione [m] nel tempo
+     - Errore di orientazione [°] nel tempo
+   - Confronta ICP filtrato (rosso) vs RAW (arancione)
+   - Permette di identificare drift e momenti critici
+   - Parametri:
+     - `real_traj`: Traiettoria ground truth [N x 3]
+     - `icp_traj`: Traiettoria stimata ICP filtrato [N x 3]
+     - `raw_traj`: Traiettoria stimata ICP RAW [N x 3]
+     - `dt`: Intervallo temporale tra campioni (default: 0.1s)
+
+**Dettagli tecnici comuni**:
+- Tutte le funzioni usano `_savefig()` per salvare con layout ottimizzato
+- DPI default: 140 per buona qualità anche su schermi ad alta risoluzione
+- Modalità non-interattiva durante il salvataggio (no finestre popup)
+- Directory create automaticamente se non esistenti
 
 ---
 
@@ -633,6 +661,7 @@ img/
     ├── overlays/          # Sovrapposizioni allineamenti
     ├── convergence/       # Curve di convergenza
     ├── arrows/            # Frecce movimento stimato
+    ├── error_over_time/   # Evoluzione errori nel tempo
     └── raw_vs_filtered/   # Confronti RAW vs Filtrato
 ```
 
@@ -731,18 +760,21 @@ img/
 **Contenuto**:
 - **Punti BLU**: Target (scansione al tempo k-1)
 - **Punti ROSSI**: Source (scansione al tempo k)
-- **Linee GRIGIE**: Corrispondenze nearest neighbor
+- **Linee NERE**: Corrispondenze nearest neighbor (situazione reale)
   - Collegano ogni punto source al suo punto più vicino in target
   - Massimo 120 linee per leggibilità
+  - Rappresentano gli accoppiamenti che l'algoritmo ICP trova tra le due scansioni
 
 **Scopo**:
 - Visualizzare il concetto di "corrispondenze" nell'ICP
-- Vedere come l'algoritmo accoppia i punti tra due scansioni
-- Identificare visivamente se le corrispondenze sono sensate
+- Vedere come l'algoritmo accoppia i punti tra due scansioni consecutive
+- Identificare visivamente se le corrispondenze sono sensate e coerenti
+- Comprendere il funzionamento base dell'algoritmo di allineamento
 
 **Note**: 
 - Rappresenta solo un subset delle coppie (per non sovraffollare il grafico)
-- Scansioni in frame locale
+- Scansioni in frame locale (centrate sul robot)
+- Le linee mostrano la "distanza" che l'ICP cerca di minimizzare
 
 ---
 
@@ -804,31 +836,115 @@ img/
 **Esempio**: `arrows_traiettoria_a_8.png`
 
 **Contenuto**:
-- **Origine (0,0)**: Punto di partenza
+- **Origine (0,0)**: Punto di partenza (frame locale del robot a k-1)
 - **Frecce colorate**: Vettori di spostamento stimati
-  - **Freccia ROSSA**: ICP Filtrato (con odometria)
-  - **Freccia ARANCIONE**: ICP RAW (senza odometria)
-- **Legenda**: Angolo di rotazione α in gradi
+  - **Freccia NERA (spessa)**: Situazione Reale (Ground Truth) - trasformazione reale dal movimento del robot
+  - **Freccia ROSSA**: ICP Filtrato (con inizializzazione da odometria)
+  - **Freccia ARANCIONE**: ICP RAW (senza inizializzazione, parte da identità)
+- **Legenda**: Mostra l'angolo di rotazione α in gradi per ogni metodo
+- **Assi ottimizzati**: Limiti automatici con margine del 50% per visualizzare completamente tutte le frecce
 
 **Scopo**:
-- Visualizzare la trasformazione stimata come vettore di movimento
-- Confrontare direzione e magnitudine dello spostamento
-- Verificare coerenza dell'angolo di rotazione stimato
+- Visualizzare e confrontare le trasformazioni stimate dai diversi metodi
+- Verificare la precisione dell'ICP rispetto al ground truth
+- Confrontare direzione e magnitudine dello spostamento tra i metodi
+- Valutare l'impatto dell'inizializzazione odometrica sulla stima finale
 
 **Interpretazione**:
 - **Lunghezza freccia**: Distanza percorsa (√(Δx² + Δy²))
-- **Direzione freccia**: Direzione del movimento nel frame locale
+- **Direzione freccia**: Direzione del movimento nel frame locale del robot
 - **Angolo α**: Rotazione del robot (+ = antiorario, - = orario)
+- **Sovrapposizione frecce**: Maggiore è la sovrapposizione tra le frecce, più accurata è la stima ICP
 
 **Esempio lettura**:
 ```
-ICP Filtrato: Δx=+0.15m, Δy=-0.02m, α=+5.2°
-→ Robot si è mosso 15cm avanti, 2cm a destra, ruotato 5.2° antiorario
+Situazione Reale (GT): Δx=+0.150m, Δy=-0.020m, α=+5.20°
+ICP (filtrato):        Δx=+0.148m, Δy=-0.021m, α=+5.18°  ← Molto vicino al GT
+RAW:                   Δx=+0.145m, Δy=-0.023m, α=+5.35°  ← Leggermente più distante
+→ L'ICP filtrato ha stimato accuratamente il movimento reale
 ```
+
+**Note tecniche**:
+- Tutte le trasformazioni sono espresse nel frame locale del robot al tempo k-1
+- Il Ground Truth proviene dall'odometria (trasformazione calcolata dalle pose reali)
+- Aspect ratio mantenuto uguale su entrambi gli assi per corretta visualizzazione angoli
 
 ---
 
-### 8. ANALISI ICP - RAW VS FILTRATO (`img/icp/raw_vs_filtered/`)
+### 8. ANALISI ICP - ERRORE NEL TEMPO (`img/icp/error_over_time/`)
+
+**Formato**: `error_over_time_{nome_traiettoria}.png`  
+**Esempio**: `error_over_time_circolare_v_costante.png`
+
+**Contenuto**:
+Grafico composto da **due subplot sovrapposti verticalmente**:
+
+**Subplot 1 - Errore di Posizione**:
+- **Asse X**: Tempo in secondi [s]
+- **Asse Y**: Errore di posizione in metri [m]
+- **Linea ROSSA continua**: Errore ICP Filtrato (con odometria)
+- **Linea ARANCIONE tratteggiata**: Errore ICP RAW (senza odometria)
+- **Formula**: Errore = √((x_reale - x_stimato)² + (y_reale - y_stimato)²)
+
+**Subplot 2 - Errore di Orientazione**:
+- **Asse X**: Tempo in secondi [s]
+- **Asse Y**: Errore di orientazione in gradi [°]
+- **Linea ROSSA continua**: Errore ICP Filtrato
+- **Linea ARANCIONE tratteggiata**: Errore ICP RAW
+- **Formula**: Errore = |θ_reale - θ_stimato| (differenza angolare normalizzata)
+
+**Scopo**:
+- Analizzare l'evoluzione temporale degli errori di localizzazione
+- Confrontare l'accuratezza dei due metodi ICP lungo l'intera traiettoria
+- Identificare momenti critici dove l'errore aumenta (es. curve strette, zone con pochi landmark)
+- Valutare l'accumulo dell'errore nel tempo (drift)
+- Quantificare il beneficio dell'inizializzazione odometrica
+
+**Interpretazione**:
+
+**Errore costante e basso** (< 0.05m posizione, < 2° orientazione):
+- ICP funziona molto bene
+- Scena ricca di feature distintive
+- Buona qualità delle scansioni LiDAR
+
+**Errore crescente nel tempo**:
+- Possibile drift (accumulo errore)
+- Tipico di localizzazione incrementale senza correzioni globali
+- L'ICP filtrato di solito ha drift minore grazie all'odometria
+
+**Picchi di errore**:
+- Momenti difficili (curve strette, accelerazioni)
+- Zone con geometria ambigua (corridoi, simmetrie)
+- Possibili fallimenti temporanei dell'ICP
+
+**Differenza tra rosso e arancione**:
+- Linea rossa sotto arancione → ICP filtrato più accurato (caso tipico)
+- Linee sovrapposte → Scena così ricca che l'inizializzazione non influisce
+- Arancione divergente → ICP RAW in difficoltà, odometria essenziale
+
+**Valori tipici**:
+- **Traiettorie semplici** (rettilinee): Errore < 0.01m, < 1°
+- **Traiettorie circolari**: Errore 0.01-0.05m, 1-3°
+- **Random walk**: Errore variabile, possibili picchi fino a 0.1m, 5°
+
+**Esempio di analisi**:
+```
+Caso: Circolare (v costante), durata 10s
+- ICP filtrato: errore medio 0.02m, massimo 0.04m, orientazione ±1.5°
+- ICP RAW: errore medio 0.035m, massimo 0.08m, orientazione ±3°
+→ L'inizializzazione odometrica migliora la precisione del ~40%
+→ Nessun drift significativo (errore non cresce monotonicamente)
+```
+
+**Note tecniche**:
+- Errori calcolati rispetto al ground truth (traiettoria reale del robot)
+- Intervallo temporale (dt) configurabile, default 0.1s
+- Differenza angolare normalizzata in [-π, π] per gestire il wrap-around
+- Le traiettorie devono avere la stessa lunghezza (allineamento temporale)
+
+---
+
+### 9. ANALISI ICP - RAW VS FILTRATO (`img/icp/raw_vs_filtered/`)
 
 **Formato**: `raw_vs_filtered_{nome_traiettoria}.png`  
 **Esempio**: `raw_vs_filtered_circolare_v_costante.png`
@@ -898,7 +1014,8 @@ I dati numerici ICP **non sono più salvati in JSON** ma sono contenuti direttam
 | **Concept ICP** | Spiegazione algoritmo | Come funziona l'accoppiamento |
 | **Overlay** | Valutazione qualità ICP | Bontà allineamento |
 | **Convergenza** | Analisi prestazioni | Velocità e stabilità ICP |
-| **Arrows** | Visualizzazione movimento | Trasformazione stimata |
+| **Arrows** | Visualizzazione movimento | Trasformazione stimata vs GT |
+| **Error over time** | Analisi temporale accuratezza | Evoluzione errori posizione/orientazione |
 | **Raw vs Filtered** | Confronto metodi | Beneficio odometria |
 | **Log testuali** | Analisi numerica, debugging | Dati esatti ICP + tracciamento completo |
 
@@ -913,7 +1030,13 @@ I dati numerici ICP **non sono più salvati in JSON** ma sono contenuti direttam
 → Sequenza: Concept → Convergenza → Overlay
 
 **Per dimostrare l'importanza dell'odometria**:
-→ Usa Raw vs Filtered + grafici convergenza
+→ Usa Raw vs Filtered + grafici convergenza + Error over time
+
+**Per analisi dell'accuratezza nel tempo**:
+→ Usa grafici Error over time (mostra drift e stabilità)
+
+**Per confronto quantitativo metodi**:
+→ Sequenza: Arrows (confronto trasformazioni) → Error over time (evoluzione temporale)
 
 **Per analisi quantitativa**:
 → Usa scansioni polari + dati dai log testuali

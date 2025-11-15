@@ -587,7 +587,8 @@ def show_trajectories_carousel(
     ax_info = None
 
     # Margini aggiustati: più spazio in basso a sinistra per i pulsanti sotto il grafico reale
-    plt.subplots_adjust(left=0.05, right=0.98, top=0.96, bottom=0.12, wspace=0.15, hspace=0.20)
+    # hspace aumentato per evitare sovrapposizione tra label x grafico sopra e titolo grafico sotto
+    plt.subplots_adjust(left=0.05, right=0.98, top=0.96, bottom=0.12, wspace=0.15, hspace=0.35)
 
     state = {"idx": 0, "playing": False, "frame": 0}
     cache: Dict[int, Dict[str, np.ndarray]] = {}
@@ -1257,11 +1258,10 @@ def show_trajectories_icp_grid(
     for idx, (hist, title) in enumerate(zip(histories, titles)):
         env_cur = _resolve_env(idx)
         lid_cur = _resolve_lidar(idx)
-        # Rimuovi "(ICP da log)" dal titolo
-        title_clean = title.replace(" (ICP da log)", "").replace("(ICP da log)", "")
+        title_clean = title
         # Figsize aumentato per evitare zoom eccessivo a schermo intero
         fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-        plt.subplots_adjust(left=0.05, right=0.98, top=0.95, bottom=0.08, wspace=0.20, hspace=0.25)
+        plt.subplots_adjust(left=0.05, right=0.98, top=0.95, bottom=0.08, wspace=0.20, hspace=0.45)
         ax_real = axes[0, 0]; ax_raw_none = axes[0, 1]; ax_filt_none = axes[1, 0]
         axes[0, 2].axis('off'); axes[1, 1].axis('off'); axes[1, 2].axis('off')
         hist_np = np.asarray(hist, dtype=float)
