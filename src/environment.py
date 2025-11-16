@@ -1,71 +1,127 @@
-# Classe che contiene gli ostacoli (gestiti con Shapely), i confini e funzioni di utilità geometriche minime
+"""
+Gestione dell'ambiente 2D con ostacoli geometrici.
+Utilizza Shapely per operazioni geometriche efficienti e ray-casting.
+"""
 
-import matplotlib.pyplot as plt  # per disegnare bounds e ostacoli
-from shapely.geometry import box  # Primitive geometriche di Shapely necessarie
-from shapely.ops import unary_union  # Operazione per unire più geometrie
-from shapely.geometry.base import BaseGeometry  # Tipo base per geometrie Shapely
-from shapely.geometry import Point, Polygon, LineString  # nuove primitive per forme non rettangolari
-from typing import List, Optional  # Tipi per annotazioni statiche
-from shapely.errors import TopologicalError  # eccezione specifica per operazioni geometriche
+import matplotlib.pyplot as plt
+from shapely.geometry import box
+from shapely.ops import unary_union
+from shapely.geometry.base import BaseGeometry
+from shapely.geometry import Point, Polygon, LineString
+from typing import List, Optional
+from shapely.errors import TopologicalError
 
 
 class Environment:
     def __init__(self):
-        # Inizializza la lista di ostacoli presenti nell'ambiente
-        self.obstacles: List[BaseGeometry] = []  # Lista di ostacoli (oggetti Shapely)
-        # Inizializza i confini dell'ambiente (rettangolo), assente all'inizio
-        self.bounds: Optional[BaseGeometry] = None  # Confini dell’ambiente (oggetto Shapely)
-        # Cache per l'unary_union degli ostacoli (ricostruita on-demand)
-        self._union_cache: Optional[BaseGeometry] = None
-        self._union_dirty: bool = True
+        """
+        Inizializza un ambiente vuoto con lista di ostacoli e confini non definiti.
+        """
+        self.obstacles: List[BaseGeometry] = []  # Lista di geometrie Shapely rappresentanti ostacoli
+        self.bounds: Optional[BaseGeometry] = None  # Confini dell'ambiente
+        self._union_cache: Optional[BaseGeometry] = None  # Cache dell'unione degli ostacoli
+        self._union_dirty: bool = True  # Flag per invalidare la cache
 
     def set_bounds(self, xmin: float, ymin: float, xmax: float, ymax: float) -> None:
-        """Imposta i confini dell’ambiente come un rettangolo axis-aligned."""
+        """
+        Imposta i confini dell'ambiente come rettangolo axis-aligned.
+
+        Args:
+            xmin: Coordinata x minima
+            ymin: Coordinata y minima
+            xmax: Coordinata x massima
+            ymax: Coordinata y massima
+        """
         self.bounds = box(float(xmin), float(ymin), float(xmax), float(ymax))
-        # Bounds non influisce sulla union degli ostacoli
 
     def add_rectangle(self, xmin: float, ymin: float, xmax: float, ymax: float) -> None:
-        """Aggiunge un ostacolo rettangolare all’ambiente."""
+        """
+        Aggiunge un ostacolo rettangolare axis-aligned.
+
+        Args:
+            xmin: Coordinata x minima del rettangolo
+            ymin: Coordinata y minima del rettangolo
+            xmax: Coordinata x massima del rettangolo
+            ymax: Coordinata y massima del rettangolo
+        """
         self.obstacles.append(box(float(xmin), float(ymin), float(xmax), float(ymax)))
         self._union_dirty = True
 
-    # --- Nuove forme di ostacolo ---
     def add_circle(self, cx: float, cy: float, radius: float, *, resolution: int = 32) -> None:
-        """Aggiunge un ostacolo circolare (approssimato come poligono) centrato in (cx,cy)."""
+        """
+        Aggiunge un ostacolo circolare approssimato come poligono.
+
+        Args:
+            cx: Coordinata x del centro
+            cy: Coordinata y del centro
+            radius: Raggio del cerchio (metri)
+            resolution: Numero di segmenti per approssimare il cerchio
+        """
         r = max(1e-6, float(radius))
         self.obstacles.append(Point(float(cx), float(cy)).buffer(r, resolution=resolution))
         self._union_dirty = True
 
     def add_polygon(self, vertices: List[tuple]) -> None:
-        """Aggiunge un ostacolo poligonale generico (lista di vertici (x,y))."""
+        """
+        Aggiunge un ostacolo poligonale generico.
+
+        Args:
+            vertices: Lista di tuple (x, y) che definiscono i vertici del poligono
+        """
         if not vertices:
             return
         self.obstacles.append(Polygon([(float(x), float(y)) for x, y in vertices]))
         self._union_dirty = True
 
     def add_wall(self, x0: float, y0: float, x1: float, y1: float, thickness: float = 0.10) -> None:
-        """Aggiunge un muro sottile tra (x0,y0)-(x1,y1) bufferizzato con spessore indicato."""
+        """
+        Aggiunge un muro sottile tra due punti.
+
+        Il muro è creato come buffer di un segmento lineare.
+
+        Args:
+            x0: Coordinata x del primo estremo
+            y0: Coordinata y del primo estremo
+            x1: Coordinata x del secondo estremo
+            y1: Coordinata y del secondo estremo
+            thickness: Spessore del muro (metri)
+        """
         t = max(1e-6, float(thickness))
         seg = LineString([(float(x0), float(y0)), (float(x1), float(y1))])
         self.obstacles.append(seg.buffer(0.5 * t, cap_style='square', join_style='mitre'))
         self._union_dirty = True
 
     def obstacles_union(self) -> Optional[BaseGeometry]:
-        """Unisce tutti gli ostacoli in un'unica geometria per intersezioni più veloci; None se non ci sono ostacoli.
-        La union è cache-ata e ricostruita solo quando la lista degli ostacoli cambia."""
+        """
+        Restituisce l'unione di tutti gli ostacoli come singola geometria.
+
+        Usa una cache per evitare ricalcoli ripetuti. La cache viene invalidata
+        quando vengono aggiunti nuovi ostacoli.
+
+        Returns:
+            Geometria unita di tutti gli ostacoli, o None se non ci sono ostacoli
+        """
         if not self.obstacles:
             self._union_cache = None
             self._union_dirty = False
             return None
+
         if self._union_cache is None or self._union_dirty:
             self._union_cache = unary_union(self.obstacles)
             self._union_dirty = False
+
         return self._union_cache
 
     def first_intersection_with_line(self, line: LineString):
         """
-        Restituisce il punto di intersezione più vicino all'origine del LineString (line.coords[0]),
-        come (x, y) tuple, oppure None se non ci sono intersezioni.
+        Trova il punto di intersezione più vicino tra un raggio e gli ostacoli.
+
+        Args:
+            line: Geometria LineString rappresentante il raggio
+
+        Returns:
+            Tupla (x, y) del punto di intersezione più vicino all'origine del raggio,
+            o None se non ci sono intersezioni
         """
         union = self.obstacles_union()
         if union is None:
@@ -75,14 +131,14 @@ class Environment:
         if inter.is_empty:
             return None
 
-        # Possibili tipi: Point, MultiPoint, LineString, MultiLineString, GeometryCollection
         origin = Point(line.coords[0])
 
         try:
-            # Caso semplice: un solo punto
+            # Caso 1: Intersezione singola
             if isinstance(inter, Point):
                 return float(inter.x), float(inter.y)
-            # Più punti: scegli il più vicino all'origine
+
+            # Caso 2: Intersezioni multiple
             if getattr(inter, 'geom_type', '') == 'MultiPoint':
                 best = None
                 best_d = float('inf')
@@ -93,13 +149,16 @@ class Environment:
                         best = pt
                 if best is not None:
                     return float(best.x), float(best.y)
-            # Segmenti/collezioni: prendi il punto su 'inter' più vicino all'origine del raggio
-            from shapely.ops import nearest_points  # import locale per evitare dipendenza forte a livello modulo
+
+            # Caso 3: Geometrie complesse
+            from shapely.ops import nearest_points
             _, p = nearest_points(origin, inter)
             return float(p.x), float(p.y)
+
         except (TopologicalError, AttributeError, TypeError, ValueError):
-            # Fallback robusto: proietta le coordinate del tipo di geometria in una lista e scegli la più vicina
+            # Fallback robusto
             def _iter_points(g):
+                """Itera ricorsivamente su tutti i punti di una geometria."""
                 gt = getattr(g, 'geom_type', '')
                 if gt == 'Point':
                     yield g
@@ -115,6 +174,7 @@ class Environment:
                 elif gt == 'GeometryCollection':
                     for h in g.geoms:
                         yield from _iter_points(h)
+
             best = None
             best_d = float('inf')
             for pt in _iter_points(inter):
@@ -122,25 +182,36 @@ class Environment:
                 if d < best_d:
                     best_d = d
                     best = pt
+
             if best is None:
                 return None
             return float(best.x), float(best.y)
 
     def plot(self, ax=None, facecolor: str = 'lightgrey', edgecolor: str = 'k') -> None:
-        """Disegna bounds e ostacoli (se ax è None crea una figura nuova)."""
+        """
+        Visualizza l'ambiente con matplotlib.
+
+        Args:
+            ax: Axes matplotlib su cui disegnare (crea una nuova figura se None)
+            facecolor: Colore di riempimento dei bounds
+            edgecolor: Colore dei bordi
+        """
         own_fig = False
         if ax is None:
             fig, ax = plt.subplots(figsize=(7, 7))
             own_fig = True
-        # Disegna bounds (se presenti)
+
+        # Disegna i confini dell'ambiente
         if self.bounds is not None:
             x, y = self.bounds.exterior.xy  # type: ignore[attr-defined]
             ax.plot(x, y, color=edgecolor, linewidth=1.0, zorder=0)
             ax.fill(x, y, alpha=0.04, facecolor=facecolor, edgecolor='none', zorder=0)
-        # Disegna ogni ostacolo come poligono riempito
+
+        # Disegna ogni ostacolo
         for poly in self.obstacles:
             x, y = poly.exterior.xy  # type: ignore[attr-defined]
             ax.fill(x, y, alpha=0.6, facecolor='tab:gray', edgecolor=edgecolor, linewidth=1.0, zorder=1)
+
         if own_fig:
             ax.set_aspect('equal', 'box')
             plt.show()

@@ -1,5 +1,7 @@
-# Classe che ha il compito di orchestrare la simulazione: avanzare il robot nel tempo, applicare comandi e salvare
-# lo stato e le scansioni
+"""
+Classe che orchestra la simulazione del robot mobile.
+Gestisce l'avanzamento temporale, l'applicazione dei comandi e la registrazione della storia.
+"""
 
 import numpy as np
 from robot import Robot
@@ -7,30 +9,65 @@ from robot import Robot
 
 class Simulator:
     def __init__(self, robot=None):
-        self.robot = robot or Robot()  # Usa il robot passato o crea una nuova istanza di Robot
-        self.history = None  # Conterrà la storia degli stati (x, y, theta) del robot
-        self.commands = None  # Conterrà la sequenza di comandi (v, omega) applicati
+        """
+        Inizializza il simulatore con un robot.
+
+        Args:
+            robot: Istanza di Robot da simulare (ne crea una nuova se None)
+        """
+        self.robot = robot or Robot()
+        self.history = None  # Storia degli stati [x, y, theta] del robot
+        self.commands = None  # Sequenza di comandi [v, omega] applicati
 
     def run_from_sequence(self, vs, omegas, dt):
-        """Esegue la simulazione per una sequenza di comandi senza alcun controllo di collisione.
-
-        - Salva history (N+1,3) e commands (N,2), partendo dallo stato corrente del robot.
         """
-        n = len(vs)  # Numero di passi temporali (lunghezza della sequenza di velocità)
-        self.history = np.zeros((n+1, 3))  # Array per salvare gli stati: n+1 perché include lo stato iniziale
-        self.commands = np.zeros((n, 2))  # Array per salvare i comandi (v, omega) applicati ad ogni step
-        self.history[0] = self.robot.state()  # Salva lo stato iniziale del robot come prima riga della history
+        Esegue la simulazione applicando una sequenza di comandi di velocità.
 
-        for k in range(n):  # Itera su ogni passo temporale
-            self.robot.set_command(vs[k], omegas[k])  # Imposta i comandi di velocità lineare e angolare per questo step
-            self.robot.step(dt)  # Avanza la dinamica del robot di dt secondi applicando il comando appena impostato
-            self.history[k+1] = self.robot.state()  # Registra il nuovo stato dopo l'avanzamento
-            self.commands[k] = [vs[k], omegas[k]]  # Memorizza il comando applicato in questo step
+        Args:
+            vs: Array di velocità lineari (N elementi)
+            omegas: Array di velocità angolari (N elementi)
+            dt: Intervallo di tempo tra i comandi
 
-        return self.history  # Ritorna l'intera traiettoria degli stati
+        Returns:
+            history: Array (N+1, 3) con gli stati del robot, includendo lo stato iniziale
+        """
+        n = len(vs)  # Numero di passi temporali da simulare
+
+        # Alloca gli array per salvare storia e comandi
+        self.history = np.zeros((n+1, 3))  # N+1 stati (include stato iniziale)
+        self.commands = np.zeros((n, 2))  # N comandi applicati
+
+        # Salva lo stato iniziale del robot
+        self.history[0] = self.robot.state()
+
+        # Esegue la simulazione passo per passo
+        for k in range(n):
+            # Imposta il comando corrente
+            self.robot.set_command(vs[k], omegas[k])
+
+            # Avanza la dinamica del robot di un passo temporale dt
+            self.robot.step(dt)
+
+            # Registra il nuovo stato dopo l'avanzamento
+            self.history[k+1] = self.robot.state()
+
+            # Salva il comando applicato
+            self.commands[k] = [vs[k], omegas[k]]
+
+        return self.history
 
     def reset_robot(self, x=0.0, y=0.0, theta=0.0):
-        """Reimposta la posizione del robot"""
-        self.robot = Robot(x=x, y=y, theta=theta)  # Crea un nuovo robot nelle coordinate specificate
-        self.history = None  # Azzera la storia perché parte una nuova simulazione
-        self.commands = None  # Azzera anche i comandi precedenti
+        """
+        Reimposta il robot a una nuova posa iniziale.
+
+        Args:
+            x: Nuova coordinata x
+            y: Nuova coordinata y
+            theta: Nuovo orientamento in radianti
+        """
+        # Crea un nuovo robot con la posa specificata
+        self.robot = Robot(x=x, y=y, theta=theta)
+
+        # Azzera storia e comandi per la nuova simulazione
+        self.history = None
+        self.commands = None
