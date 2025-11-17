@@ -62,19 +62,6 @@ def save_concept_correspondences(res: Dict, title: str, out_path: str, max_lines
 
 # 2) Effetto dell'inizializzazione: overlay finali
 
-def save_alignment_overlays(res: Dict, title: str, out_path: str):
-    tgt = np.asarray(res['tgt_local'])
-    src_none = np.asarray(res['none']['src_transformed'])
-    src_raw_none = np.asarray(res['raw_none']['src_transformed'])
-    plt.figure(figsize=(6, 5))
-    plt.scatter(tgt[:, 0], tgt[:, 1], s=10, c='k', label='Target (k-1)')
-    plt.scatter(src_none[:, 0], src_none[:, 1], s=8, c='tab:red', alpha=0.7, label='ICP (filtrato)')
-    plt.scatter(src_raw_none[:, 0], src_raw_none[:, 1], s=8, c='tab:orange', alpha=0.5, label='RAW')
-    plt.axis('equal'); plt.grid(alpha=0.3)
-    plt.title(title)
-    plt.legend(loc='upper right', fontsize=8)
-    _savefig(out_path)
-
 
 # 3) Curve di convergenza (RMSE per iterazione)
 

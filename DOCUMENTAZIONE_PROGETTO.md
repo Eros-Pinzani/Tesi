@@ -523,17 +523,12 @@ L'odometria fornisce:
    - Limita numero di linee per leggibilità (default: max 120 linee)
    - Include legenda esplicativa per interpretare il grafico
 
-2. **`save_alignment_overlays(res, title, out_path)`**:
-   - Overlay finale: target + source trasformato
-   - Confronta risultati ICP filtrato (rosso) vs RAW (arancione)
-   - Target in nero come riferimento
-
-3. **`save_convergence_curves(res, title, out_path)`**:
+2. **`save_convergence_curves(res, title, out_path)`**:
    - Plot RMSE vs numero iterazioni
    - Mostra velocità di convergenza per entrambi i metodi
    - Linea continua per ICP filtrato, tratteggiata per RAW
 
-4. **`save_motion_arrows(res, title, out_path)`**:
+3. **`save_motion_arrows(res, title, out_path)`**:
    - Frecce che rappresentano trasformazione stimata
    - **Include Ground Truth** (freccia nera più spessa) dal movimento reale
    - Freccia rossa per ICP filtrato, arancione per RAW
@@ -541,11 +536,11 @@ L'odometria fornisce:
    - **Limiti assi ottimizzati**: margine automatico del 50% per visualizzare tutte le frecce complete
    - Aspect ratio mantenuto per corretta visualizzazione angoli
 
-5. **`save_raw_vs_filtered(res, title, out_path)`**:
+4. **`save_raw_vs_filtered(res, title, out_path)`**:
    - Confronto diretto RAW vs Filtrato su stessi assi
    - Evidenzia il beneficio dell'inizializzazione odometrica
 
-6. **`save_error_over_time(real_traj, icp_traj, raw_traj, title, out_path, dt)`**: *(NUOVO)*
+5. **`save_error_over_time(real_traj, icp_traj, raw_traj, title, out_path, dt)`**: *(NUOVO)*
    - Analisi temporale dell'accuratezza dell'ICP lungo l'intera traiettoria
    - **Due subplot verticali**:
      - Errore di posizione [m] nel tempo
@@ -604,7 +599,7 @@ L'odometria fornisce:
        - `curr_local = lidar.scan_hits(curr_pose, env, frame='local')`
      - Esegue ICP con e senza inizializzazione
      - Calcola traiettorie stimate
-     - Salva plot di analisi (convergenza, overlay, frecce, ecc.)
+     - Salva plot di analisi (convergenza, frecce, confronto raw vs filtrato, ecc.)
      - **Stampa dati numerici nel log** (Reali, ICP, RAW per ogni step)
 
 7. **Visualizzazione**:
@@ -615,7 +610,7 @@ L'odometria fornisce:
    - `img/trajectories/`: Plot traiettorie
    - `img/scans/`: Scansioni LiDAR cartesiane
    - `img/scans_polar/`: Scansioni polari
-   - `img/icp/`: Analisi ICP (convergenza, overlay, frecce)
+   - `img/icp/`: Analisi ICP (convergenza, frecce, confronto raw vs filtrato)
    - `logs/`: File di log con timestamp (contengono anche tutti i dati numerici ICP)
 
 **Argomenti da linea di comando**:
@@ -658,7 +653,6 @@ img/
 │   └── [stessa struttura di scans/]
 └── icp/                   # Analisi ICP
     ├── concept/           # Schemi concettuali corrispondenze
-    ├── overlays/          # Sovrapposizioni allineamenti
     ├── convergence/       # Curve di convergenza
     ├── arrows/            # Frecce movimento stimato
     ├── error_over_time/   # Evoluzione errori nel tempo
@@ -778,29 +772,7 @@ img/
 
 ---
 
-### 5. ANALISI ICP - OVERLAY ALLINEAMENTI (`img/icp/overlays/`)
-
-**Formato**: `overlay_{nome_traiettoria}.png`  
-**Esempio**: `overlay_rettilinea_v_costante.png`
-
-**Contenuto**:
-- **Punti NERI**: Target (riferimento, tempo k-1)
-- **Punti ROSSI**: Source trasformato con ICP Filtrato (con odometria)
-- **Punti ARANCIONI**: Source trasformato con ICP RAW (senza odometria)
-
-**Scopo**:
-- Confrontare qualità dell'allineamento finale
-- Verificare sovrapposizione tra target e source trasformato
-- Valutare l'effetto dell'inizializzazione da odometria
-
-**Interpretazione**:
-- **Sovrapposizione perfetta** (rosso/arancione su nero): ICP ha funzionato bene
-- **Offset residuo**: Errore di allineamento (ICP non convergente o scena ambigua)
-- **Differenza rosso-arancione**: Beneficio dell'inizializzazione odometrica
-
----
-
-### 6. ANALISI ICP - CONVERGENZA (`img/icp/convergence/`)
+### 5. ANALISI ICP - CONVERGENZA (`img/icp/convergence/`)
 
 **Formato**: `convergence_{nome_traiettoria}.png`  
 **Esempio**: `convergence_random_walk.png`
@@ -830,7 +802,7 @@ img/
 
 ---
 
-### 7. ANALISI ICP - FRECCE MOVIMENTO (`img/icp/arrows/`)
+### 6. ANALISI ICP - FRECCE MOVIMENTO (`img/icp/arrows/`)
 
 **Formato**: `arrows_{nome_traiettoria}.png`  
 **Esempio**: `arrows_traiettoria_a_8.png`
@@ -871,7 +843,7 @@ RAW:                   Δx=+0.145m, Δy=-0.023m, α=+5.35°  ← Leggermente pi�
 
 ---
 
-### 8. ANALISI ICP - ERRORE NEL TEMPO (`img/icp/error_over_time/`)
+### 7. ANALISI ICP - ERRORE NEL TEMPO (`img/icp/error_over_time/`)
 
 **Formato**: `error_over_time_{nome_traiettoria}.png`  
 **Esempio**: `error_over_time_circolare_v_costante.png`
@@ -944,7 +916,7 @@ Caso: Circolare (v costante), durata 10s
 
 ---
 
-### 9. ANALISI ICP - RAW VS FILTRATO (`img/icp/raw_vs_filtered/`)
+### 8. ANALISI ICP - RAW VS FILTRATO (`img/icp/raw_vs_filtered/`)
 
 **Formato**: `raw_vs_filtered_{nome_traiettoria}.png`  
 **Esempio**: `raw_vs_filtered_circolare_v_costante.png`
