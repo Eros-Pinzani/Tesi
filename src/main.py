@@ -10,9 +10,9 @@ import time  # per ETA nella barra di progresso
 from tqdm import tqdm as _tqdm  # progress bar esterna con ETA
 from icp_plots import (
     save_concept_correspondences,
+    save_alignment_overlays,
     save_convergence_curves,
     save_motion_arrows,
-    save_raw_vs_filtered,
     save_error_over_time,
 )
 from typing import List, Optional, Tuple, Dict
@@ -768,9 +768,9 @@ def main():
 
                 icp_all_cases.append(res_list)
             print("[Esecuzione ICP] Completata. Salvo grafici ICP riassuntivi...")
-            # Salvataggio grafici riassuntivi per ogni caso (concept, convergence, arrows, raw_vs_filtered, error_over_time)
+            # Salvataggio grafici riassuntivi per ogni caso (concept, overlay, convergence, arrows, error_over_time)
             try:
-                visualizer.ensure_icp_dirs('concept', 'convergence', 'arrows', 'raw_vs_filtered', 'error_over_time')
+                visualizer.ensure_icp_dirs('concept', 'overlays', 'convergence', 'arrows', 'error_over_time')
             except OSError:
                 pass
 
@@ -800,7 +800,7 @@ def main():
                             imp = diff if diff > 0.0 else 0.0
                     return 0.6*rot_deg + 0.3*trans + 0.1*imp
                 return max(cand, key=_score)
-            per_case_imgs = 5  # concept, convergence, arrows, raw_vs_filtered, error_over_time
+            per_case_imgs = 5  # concept, overlays, convergence, arrows, error_over_time
             total_icp_imgs = per_case_imgs * len(histories)
             if _tqdm is not None:
                 with _tqdm(total=total_icp_imgs, desc="Grafici ICP", unit="img", ncols=90) as pbar_icp:
@@ -811,9 +811,9 @@ def main():
                             continue
                         base_slug = _slugify_local(plot_title)
                         save_concept_correspondences(rep, f"Corrispondenze – {plot_title}", visualizer.icp_out_path('concept', f"{base_slug}_concept.png")); pbar_icp.update(1)
+                        save_alignment_overlays(rep, f"Overlay – {plot_title}", visualizer.icp_out_path('overlays', f"{base_slug}_overlays.png")); pbar_icp.update(1)
                         save_convergence_curves(rep, f"Convergenza – {plot_title}", visualizer.icp_out_path('convergence', f"{base_slug}_convergence.png")); pbar_icp.update(1)
                         save_motion_arrows(rep, f"Δ Pose – {plot_title}", visualizer.icp_out_path('arrows', f"{base_slug}_arrows.png")); pbar_icp.update(1)
-                        save_raw_vs_filtered(rep, f"RAW vs Filtrato – {plot_title}", visualizer.icp_out_path('raw_vs_filtered', f"{base_slug}_raw_vs_filtered.png")); pbar_icp.update(1)
                         pbar_icp.update(1)  # Placeholder per error_over_time (verrà generato dopo)
             else:
                 for idx_case, (plot_title, plot_res, case_hist) in enumerate(zip(titles, icp_all_cases, histories)):
@@ -822,9 +822,9 @@ def main():
                         continue
                     base_slug = _slugify_local(plot_title)
                     save_concept_correspondences(rep, f"Corrispondenze – {plot_title}", visualizer.icp_out_path('concept', f"{base_slug}_concept.png"))
+                    save_alignment_overlays(rep, f"Overlay – {plot_title}", visualizer.icp_out_path('overlays', f"{base_slug}_overlays.png"))
                     save_convergence_curves(rep, f"Convergenza – {plot_title}", visualizer.icp_out_path('convergence', f"{base_slug}_convergence.png"))
                     save_motion_arrows(rep, f"Δ Pose – {plot_title}", visualizer.icp_out_path('arrows', f"{base_slug}_arrows.png"))
-                    save_raw_vs_filtered(rep, f"RAW vs Filtrato – {plot_title}", visualizer.icp_out_path('raw_vs_filtered', f"{base_slug}_raw_vs_filtered.png"))
 
             # Stampa legenda + riepilogo ICP su console quando run_icp è attivo
             if getattr(args, 'run_icp', False):

@@ -62,6 +62,19 @@ def save_concept_correspondences(res: Dict, title: str, out_path: str, max_lines
 
 # 2) Effetto dell'inizializzazione: overlay finali
 
+def save_alignment_overlays(res: Dict, title: str, out_path: str):
+    tgt = np.asarray(res['tgt_local'])
+    src_none = np.asarray(res['none']['src_transformed'])
+    src_raw_none = np.asarray(res['raw_none']['src_transformed'])
+    plt.figure(figsize=(6, 5))
+    plt.scatter(tgt[:, 0], tgt[:, 1], s=10, c='k', label='Target (k-1)')
+    plt.scatter(src_none[:, 0], src_none[:, 1], s=8, c='tab:red', alpha=0.7, label='ICP (filtrato)')
+    plt.scatter(src_raw_none[:, 0], src_raw_none[:, 1], s=8, c='tab:orange', alpha=0.5, label='RAW')
+    plt.axis('equal'); plt.grid(alpha=0.3)
+    plt.title(title)
+    plt.legend(loc='upper right', fontsize=8)
+    _savefig(out_path)
+
 
 # 3) Curve di convergenza (RMSE per iterazione)
 
@@ -135,19 +148,6 @@ def save_motion_arrows(res: Dict, title: str, out_path: str):
 
 
 # 14) Confronto RAW vs Filtrato (overlay target + raw vs filtrato, per una coppia)
-
-def save_raw_vs_filtered(res: Dict, title: str, out_path: str):
-    tgt = np.asarray(res['tgt_local'])
-    raw = np.asarray(res['raw_none']['src_transformed'])
-    filt = np.asarray(res['none']['src_transformed'])
-    plt.figure(figsize=(5.5, 4.5))
-    plt.scatter(tgt[:, 0], tgt[:, 1], s=10, c='k', label='Target (k-1)')
-    plt.scatter(raw[:, 0], raw[:, 1], s=8, c='tab:orange', alpha=0.6, label='RAW')
-    plt.scatter(filt[:, 0], filt[:, 1], s=8, c='tab:red', alpha=0.8, label='ICP (filtrato)')
-    plt.axis('equal'); plt.grid(alpha=0.3)
-    plt.title(title)
-    plt.legend(loc='upper right', fontsize=8)
-    _savefig(out_path)
 
 
 # 15) Errore di posizione e orientazione nel tempo
