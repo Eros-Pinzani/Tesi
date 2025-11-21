@@ -304,6 +304,55 @@ def apply_loop_closure_correction(trajectory: np.ndarray, is_circular: bool = Fa
     return corrected
 
 
+def compute_odometry_trajectory(history: np.ndarray, dt: float,
+                                noise_pos: float = 0.01,
+                                noise_angle: float = 0.005) -> np.ndarray:
+    """
+    Simula una traiettoria odometrica con drift accumulato a partire dal ground truth.
+
+    Questa funzione prende la traiettoria reale del robot e simula come sarebbe
+    la traiettoria ricostruita usando solo odometria, aggiungendo rumore alle
+    velocità lineari e angolari per simulare il drift caratteristico dei sensori
+    odometrici.
+
+    Args:
+        history: Traiettoria ground truth [N, 3] con formato (x, y, theta)
+        dt: Passo temporale tra frame consecutivi (secondi)
+        noise_pos: Deviazione standard del rumore sulla velocità lineare (m/s)
+        noise_angle: Deviazione standard del rumore sulla velocità angolare (rad/s)
+
+    Returns:
+        Traiettoria odometrica con drift accumulato [N, 3]
+    """
+    odom_traj = np.zeros_like(history)
+    odom_traj[0] = history[0].copy()  # Stessa posizione di partenza
+
+    for k in range(1, len(history)):
+        # Calcola il movimento reale tra i frame k-1 e k
+        dx_real = history[k, 0] - history[k-1, 0]
+        dy_real = history[k, 1] - history[k-1, 1]
+        dtheta_real = history[k, 2] - history[k-1, 2]
+
+        # Calcola velocità reali dal movimento ground truth
+        v_real = np.sqrt(dx_real**2 + dy_real**2) / dt
+        omega_real = dtheta_real / dt
+
+        # Aggiungi rumore gaussiano alle velocità per simulare errori odometrici
+        v_noisy = v_real + np.random.normal(0, noise_pos)
+        omega_noisy = omega_real + np.random.normal(0, noise_angle)
+
+        # Integra con Eulero usando le velocità rumorose
+        theta_prev = odom_traj[k-1, 2]
+        odom_traj[k, 0] = odom_traj[k-1, 0] + v_noisy * np.cos(theta_prev) * dt
+        odom_traj[k, 1] = odom_traj[k-1, 1] + v_noisy * np.sin(theta_prev) * dt
+        odom_traj[k, 2] = odom_traj[k-1, 2] + omega_noisy * dt
+
+        # Normalizza angolo nell'intervallo [-π, π]
+        odom_traj[k, 2] = _wrap_angle(odom_traj[k, 2])
+
+    return odom_traj
+
+
 def _build_lidars_for_cases(envs: List[Environment], titles: List[str]) -> List[Lidar]:
     """Crea una lista di Lidar per singolo caso con r_max adattivo per non coprire sempre tutti gli ostacoli.
     Strategia: r_max = fattore * diagonale dei bounds, con fattori più piccoli per i casi rettilinei."""
@@ -701,6 +750,14 @@ def main():
                 # Calcola step_idx per questo caso specifico
                 _step = max(1, int(round(icp_scan_interval / max(1e-9, float(dt)))))
 
+                # Genera traiettoria odometrica con drift per questo caso
+                odom_traj = compute_odometry_trajectory(
+                    case_hist,
+                    dt=dt,
+                    noise_pos=0.01,  # 1 cm/s di rumore sulla velocità lineare
+                    noise_angle=0.005  # ~0.3° di rumore sulla velocità angolare
+                )
+
                 # Progress bar per-caso
                 case_pbar = None
                 if _tqdm is not None:
@@ -718,12 +775,19 @@ def main():
                 res_list = []
                 for k in range(_step, len(case_hist), _step):
                     prev_idx = k - _step
-                    prev_pose = case_hist[prev_idx]
-                    curr_pose = case_hist[k]
 
-                    # Genera scansioni LiDAR in frame locale
-                    prev_local = case_lid.scan_hits(prev_pose, case_env, frame='local')
-                    curr_local = case_lid.scan_hits(curr_pose, case_env, frame='local')
+                    # Usa la traiettoria ODOMETRICA (con drift) per l'inizializzazione ICP filtrato
+                    prev_pose_odom = odom_traj[prev_idx]
+                    curr_pose_odom = odom_traj[k]
+
+                    # Ma le scansioni devono essere REALI (altrimenti sarebbe irrealistico)
+                    # Il robot scansiona l'ambiente dalla sua posizione reale, non da quella odometrica
+                    prev_pose_real = case_hist[prev_idx]
+                    curr_pose_real = case_hist[k]
+
+                    # Genera scansioni LiDAR in frame locale dalle pose REALI
+                    prev_local = case_lid.scan_hits(prev_pose_real, case_env, frame='local')
+                    curr_local = case_lid.scan_hits(curr_pose_real, case_env, frame='local')
 
                     if len(prev_local) < 10 or len(curr_local) < 10:
                         res_list.append({
@@ -749,9 +813,11 @@ def main():
                         _max_iter = 50
                         _tolerance = 1e-6
 
+                    # IMPORTANTE: passa le pose ODOMETRICHE (con drift) per l'inizializzazione
+                    # ma usa le scansioni REALI (curr_local, prev_local già calcolate sopra)
                     result = run_icp_pair(
-                        prev_pose, curr_pose,
-                        curr_local, prev_local,  # source=k, target=k-_step
+                        prev_pose_odom, curr_pose_odom,  # <-- Pose odometriche con drift
+                        curr_local, prev_local,  # source=k, target=k-_step (scansioni reali)
                         max_iterations=_max_iter,
                         tolerance=_tolerance,
                         max_correspondence_distance=_maxcorr
